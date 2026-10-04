@@ -1,32 +1,40 @@
-# Python
-__pycache__/
-*.py[cod]
+docs/rebuild/runs/
 .venv/
+.venv-*/
+__pycache__/
+*.pyc
 .mypy_cache/
 .ruff_cache/
 .pytest_cache/
-.complexipy_cache/
-.coverage
 coverage.xml
 bandit.json
-
-# Node
-node_modules/
+.env
+frontend/node_modules/
 frontend/dist/
 frontend/dist-demo/
 frontend/test-results/
-frontend/a11y-results/
+.complexipy_cache/
+.coverage
 
-# Firebase / Google Cloud
+# Another session's workflow worktrees, never part of the tree.
+.claude/worktrees/
+
+# Another session's live goal log at the repo root; the reviews it once held are docs/rebuild/findings-round2.md.
+/findings.md
+
+# Local blob caches and retained qualification runs (public documents by digest).
+.dev-data/
+.claude/launch.json
+
+# caos-firebase
+*.py[cod]
+node_modules/
+frontend/a11y-results/
 .firebase/
 firebase-debug.log*
 firestore-debug.log*
 ui-debug.log*
-
-# Local state and secrets
-.env
 .env.*
 !.env.example
-.dev-data/
 docs/runs/
 .DS_Store

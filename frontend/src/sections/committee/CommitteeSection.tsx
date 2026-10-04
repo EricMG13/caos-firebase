@@ -1,0 +1,308 @@
+import { DownloadIcon, FileTextIcon } from "lucide-react";
+import { scopeOf, sentence } from "@/chrome/compose";
+import { cn } from "cn";
+import { buttonVariants } from "@/components/ui/button";
+import { RefusedControl } from "@/controls/RefusedControl";
+import { ArtifactTexts } from "@/ds/ArtifactMarkdown";
+import { NoteRows } from "@/ds/atoms";
+import { Narrative } from "@/evidence/Narrative";
+import type { Refusal } from "@/wire";
+import type { CommitteeDocument } from "@/wire/v1";
+import { Digest } from "@/ds/Digest";
+
+/** The package is the filed revision's: a frozen one has none to download. */
+const PACKAGE_NOT_FILED: Refusal = {
+  code: "PACKAGE_NOT_FILED",
+  clears: "the revision is filed",
+};
+
+/** A link the host serves for another revision, or anywhere else. */
+const LINK_NOT_OWN: Refusal = {
+  code: "LINK_NOT_OWN",
+  clears: "the host links this revision's own read",
+};
+
+/** The URL if it is exactly the host's own read of this revision
+    (`/api/v1/cases/{case}/revisions/{revision}/{kind}`, as
+    `caos/api/reads/reports.py` builds it), else null: a link to another
+    origin, case or revision, or a script, is never followed from here. */
+function ownRead(
+  body: CommitteeDocument["body"],
+  url: string | null,
+  kind: "render" | "package",
+): string | null {
+  const expected = `/api/v1/cases/${body.case_id}/revisions/${body.revision_id}/${kind}`;
+  return url === expected ? url : null;
+}
+
+/** The revision as the renderer draws it, and once filed, the package (N4).
+    Both are the host's own reads; the page only links them. */
+function Downloads({ body }: { body: CommitteeDocument["body"] }) {
+  // Merged as the Button merges them: unmerged, the base border-transparent
+  // won over the outline's border and the links drew no edge.
+  const look = cn(buttonVariants({ variant: "outline", size: "sm" }));
+  const render = ownRead(body, body.render_url, "render");
+  const pkg = ownRead(body, body.package_url, "package");
+  return (
+    <div className="flex flex-wrap items-start gap-2" data-committee-downloads>
+      {render ? (
+        <a className={look} href={render} data-committee-render>
+          <FileTextIcon aria-hidden="true" />
+          Open the rendered page
+        </a>
+      ) : (
+        <RefusedControl refusal={LINK_NOT_OWN}>Open the rendered page</RefusedControl>
+      )}
+      {pkg ? (
+        <a className={look} href={pkg} download data-committee-package>
+          <DownloadIcon aria-hidden="true" />
+          Download the package (.zip)
+        </a>
+      ) : (
+        <RefusedControl refusal={body.package_url === null ? PACKAGE_NOT_FILED : LINK_NOT_OWN}>
+          Download the package (.zip)
+        </RefusedControl>
+      )}
+    </div>
+  );
+}
+
+function Artifact({ artifact }: { artifact: CommitteeDocument["body"]["artifacts"][number] }) {
+  return (
+    <section className="pnl" data-committee-artifact={artifact.route_node_id}>
+      <header>
+        <h2>{artifact.route_node_id}</h2>
+        <span className="cp">
+          {artifact.qa_status} · {artifact.committee_status}
+        </span>
+      </header>
+      <div className="pb">
+        <dl className="kv">
+          <dt>Artifact</dt>
+          <dd>
+            <Digest value={artifact.artifact_sha256} prefix="sha256:" />
+          </dd>
+          <dt>Record</dt>
+          <dd>
+            <Digest value={artifact.record_sha256} prefix="sha256:" />
+          </dd>
+          <dt>Scope</dt>
+          <dd className="prose">{sentence(scopeOf(artifact.decision_scope))}</dd>
+          <NoteRows label="Limitations" values={artifact.limitation_flags} />
+          <NoteRows label="Validation warnings" values={artifact.validation_warnings} />
+        </dl>
+        <ArtifactTexts
+          markdown={artifact.markdown}
+          record={artifact.record}
+          label={`${artifact.route_node_id} saved artifact`}
+          section="committee"
+        />
+      </div>
+    </section>
+  );
+}
+
+function Filing({ document }: { document: CommitteeDocument }) {
+  const { body } = document;
+  const receipt = body.receipt;
+  return (
+    <section className="pnl" data-committee-filing data-state={body.state}>
+      <header>
+        <h2>Committee state</h2>
+        <span className="tag">{body.state}</span>
+      </header>
+      <div className="pb">
+        <dl className="kv">
+          <dt>Signers</dt>
+          <dd>
+            {body.signed_by.map((signer, index) => (
+              <span key={`${signer}-${index}`}>
+                {index ? ", " : null}
+                <Digest value={signer} />
+              </span>
+            ))}
+          </dd>
+          <dt>Frozen by</dt>
+          <dd>
+            <Digest value={body.frozen_by} />
+          </dd>
+          <dt>Filed by</dt>
+          <dd>
+            <Digest value={body.filed_by} />
+          </dd>
+        </dl>
+        {receipt ? (
+          <dl className="kv" data-committee-receipt>
+            <dt>Receipt case</dt>
+            <dd>
+              <Digest value={receipt.case_id} />
+            </dd>
+            <dt>Receipt run</dt>
+            <dd>
+              <Digest value={receipt.run_id} />
+            </dd>
+            <dt>Receipt revision</dt>
+            <dd>
+              <Digest value={receipt.revision_id} />
+            </dd>
+            <dt>Receipt payload</dt>
+            <dd>
+              <Digest value={receipt.payload_sha256} prefix="sha256:" />
+            </dd>
+            <dt>Receipt signer</dt>
+            <dd>
+              <Digest value={receipt.signed_by} />
+            </dd>
+            <dt>Receipt freezer</dt>
+            <dd>
+              <Digest value={receipt.frozen_by} />
+            </dd>
+            <dt>Receipt filer</dt>
+            <dd>
+              <Digest value={receipt.filed_by} />
+            </dd>
+            <dt>Renderer</dt>
+            <dd>
+              <Digest value={receipt.renderer_sha256} prefix="sha256:" />
+            </dd>
+            <dt>Filed event</dt>
+            <dd>
+              <Digest value={receipt.filed_event_sha256} prefix="sha256:" />
+            </dd>
+          </dl>
+        ) : null}
+      </div>
+    </section>
+  );
+}
+
+/** The filed deliverable as paper (N62): ink on cream in either theme, and
+    only once filed -- the one moment the product exists to reach. What the
+    committee reads (the narrative with its figures), who stands behind it,
+    and the digests that bind it. The full receipt stays below as the record. */
+function Paper({ body }: { body: CommitteeDocument["body"] }) {
+  const receipt = body.receipt;
+  return (
+    <article className="paper" data-paper aria-labelledby="paper-title">
+      <header className="paper-mast">
+        <span>Credit committee paper</span>
+        <Digest value={body.case_id} copy={false} />
+      </header>
+      <p className="paper-stamp">Filed</p>
+      <h2 id="paper-title">{body.case_title}</h2>
+      <p className="paper-sub">
+        Revision <Digest value={body.revision_id} copy={false} /> · run{" "}
+        <Digest value={body.displayed_run_id} copy={false} />
+      </p>
+      <h3>Narrative</h3>
+      <div className="paper-body" data-committee-narrative>
+        <Narrative narrative={body.narrative} />
+      </div>
+      <dl className="paper-sign">
+        <dt>Signed by</dt>
+        <dd>
+          {body.signed_by.map((signer, index) => (
+            <span key={`${signer}-${index}`}>
+              {index ? ", " : null}
+              <Digest value={signer} copy={false} />
+            </span>
+          ))}
+        </dd>
+        <dt>Frozen by</dt>
+        <dd>
+          <Digest value={body.frozen_by} copy={false} />
+        </dd>
+        {body.filed_by ? (
+          <>
+            <dt>Filed by</dt>
+            <dd>
+              <Digest value={body.filed_by} copy={false} />
+            </dd>
+          </>
+        ) : null}
+      </dl>
+      <footer className="paper-filed">
+        Payload <Digest value={body.payload_sha256} prefix="sha256:" copy={false} />
+        {receipt ? (
+          <>
+            {" "}
+            · filed event{" "}
+            <Digest value={receipt.filed_event_sha256} prefix="sha256:" copy={false} />
+          </>
+        ) : null}
+      </footer>
+    </article>
+  );
+}
+
+export function CommitteeSection({
+  document,
+}: {
+  document: CommitteeDocument;
+  tab: string | null;
+}) {
+  const { body } = document;
+  const filed = body.state === "filed";
+  return (
+    <div
+      className="col"
+      data-committee-v1
+      data-case={body.case_id}
+      data-run={body.displayed_run_id}
+      data-revision={body.revision_id}
+      data-payload={body.payload_sha256}
+    >
+      {filed ? (
+        // The paper and its two links as one page width, centred in the body
+        // rather than stopping short of the cards' right edge (brief 5).
+        <div className="paper-desk" data-paper-desk>
+          <Paper body={body} />
+          <Downloads body={body} />
+        </div>
+      ) : (
+        <section className="pnl">
+          <header>
+            <h2>{body.case_title}</h2>
+            <span className="cp">Saved committee</span>
+          </header>
+          <div className="pb">
+            <dl className="kv">
+              <dt>Case</dt>
+              <dd>
+                <Digest value={body.case_id} />
+              </dd>
+              <dt>Run</dt>
+              <dd>
+                <Digest value={body.displayed_run_id} />
+              </dd>
+              <dt>Revision</dt>
+              <dd>
+                <Digest value={body.revision_id} />
+              </dd>
+              <dt>Payload</dt>
+              <dd>
+                <Digest value={body.payload_sha256} prefix="sha256:" />
+              </dd>
+            </dl>
+            <Downloads body={body} />
+          </div>
+        </section>
+      )}
+      {body.artifacts.map((artifact) => (
+        <Artifact key={artifact.route_node_id} artifact={artifact} />
+      ))}
+      {filed ? null : (
+        <section className="pnl" data-committee-narrative>
+          <header>
+            <h2>Narrative</h2>
+            <span className="tag">{body.narrative.length}</span>
+          </header>
+          <div className="pb">
+            <Narrative narrative={body.narrative} />
+          </div>
+        </section>
+      )}
+      <Filing document={document} />
+    </div>
+  );
+}

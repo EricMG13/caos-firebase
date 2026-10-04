@@ -1,0 +1,52 @@
+{
+  "caos/api/commands/deliverable.py": {
+    "blob": 7,
+    "io": 57
+  },
+  "caos/api/reads/analysis.py": {
+    "blob": 40,
+    "io": 249
+  },
+  "caos/api/reads/book.py": {
+    "blob": 160,
+    "io": 998
+  },
+  "caos/api/reads/deliverable.py": {
+    "blob": {
+      "package": 3,
+      "render": 3,
+      "render_frozen": 7
+    },
+    "io": {
+      "package": 20,
+      "render": 20,
+      "render_frozen": 50
+    }
+  },
+  "caos/api/reads/evidence.py": {
+    "blob": 1,
+    "io": 2
+  },
+  "caos/api/reads/model.py": {
+    "blob": 40,
+    "io": 250
+  },
+  "caos/api/reads/reports.py": {
+    "blob": {
+      "committee": 2,
+      "frozen": 7,
+      "report": 7,
+      "unsaved": 6
+    },
+    "io": {
+      "committee": 22,
+      "frozen": 53,
+      "report": 46,
+      "unsaved": 42
+    }
+  },
+  "caos/api/reads/run.py": {
+    "blob": 4,
+    "io": 52
+  }
+}

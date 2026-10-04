@@ -1,0 +1,302 @@
+# Every gate in docs/rebuild/2026-09-22-caos-databricks-spec.md section 5,
+# as one job per toolchain. Installs are locked (`uv sync --locked`) and
+# wheels-only (`tool.uv.no-build`), actions are SHA-pinned, and a superseded
+# run is cancelled. The gateway smoke (A31) is not here: it needs a workspace
+# profile and spends money, so it is run by a deployer (docs/DEPLOYMENT.md).
+name: ci
+on:
+  push:
+    branches: [main, rebuild/databricks]
+  pull_request:
+    # `edited` too (FP-11): retargeting a PR's base branch is an "edited"
+    # event, and every gate that reads `github.base_ref` -- this one
+    # included -- must re-run against the new base rather than leave a
+    # result computed against the old one showing as still current.
+    types: [opened, synchronize, reopened, ready_for_review, edited]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  UV_VERSION: "0.12.5"
+
+jobs:
+  lint:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with: {fetch-depth: 0}
+      - uses: astral-sh/setup-uv@bec219d24cd3e171d82865faccec33120bb574f4 # v10.1.0
+        with: {version: "0.12.5", enable-cache: true}
+      - run: uv sync --locked --all-groups
+      - run: uv run ruff check .
+      - run: uv run ruff format --check .
+      - run: uv run python scripts/check_vocabulary.py
+      - run: uv run python scripts/check_tested.py
+      - run: uv run python scripts/io_budget.py --assert
+      - run: uv run python scripts/check_gate_config.py
+      - run: uv run python scripts/check_icm.py
+      - run: uv run python scripts/document_register.py
+      - run: uv run complexipy caos scripts icm --max-complexity-allowed 15
+      - run: uv run pre-commit run --all-files --show-diff-on-failure
+      # A budget may only fall (F58, DF-11), on a push as on a pull request:
+      # the baseline an earlier commit holds is the ceiling. A push is held
+      # to the tip it replaced, a pull request to its base branch.
+      - name: the suppression baseline did not rise
+        env:
+          BASE_REF: ${{ github.base_ref }}
+          BEFORE: ${{ github.event.before }}
+        run: |
+          base=HEAD^
+          if [ -n "$BASE_REF" ]; then base="origin/$BASE_REF"; elif git cat-file -e "$BEFORE^{commit}" 2>/dev/null; then base="$BEFORE"; fi
+          # `--against` measures $base's own tracked files and this tree's
+          # fresh, rather than trusting either committed
+          # tests/gate_baseline.json, and twice: under this commit's
+          # SUPPRESSIONS patterns (FP-11), and under $base's own checker read
+          # from git (W5) -- so a PR that only weakened a pattern can neither
+          # make its count look like a fall nor hide the suppression it spends.
+          uv run python scripts/check_gate_config.py --against "$base"
+
+  types:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: astral-sh/setup-uv@bec219d24cd3e171d82865faccec33120bb574f4 # v10.1.0
+        with: {version: "0.12.5", enable-cache: true}
+      - run: uv sync --locked --all-groups
+      - run: uv run mypy caos scripts tests
+
+  test:
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    services:
+      postgres:
+        # Digest-pinned; a tag alone is not a pin. postgres:17-alpine.
+        image: postgres@sha256:18cfe3ef5e6815560c98237d6216d1e5119702fb0f3894c8785dd58b8bbe5d73
+        env: {POSTGRES_PASSWORD: caos, POSTGRES_DB: caos}
+        options: >-
+          --health-cmd pg_isready --health-interval 5s --health-retries 10
+        ports: ["5432:5432"]
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with: {fetch-depth: 0}
+      - uses: astral-sh/setup-uv@bec219d24cd3e171d82865faccec33120bb574f4 # v10.1.0
+        with: {version: "0.12.5", enable-cache: true}
+      - run: uv sync --locked --all-groups
+      # A stuck test prints its stack after ten minutes, and a worker that dies
+      # fails the session rather than waiting on a replacement (the 60-minute
+      # hangs on 653dc9c and c37733e printed dots only).
+      - run: uv run pytest -n auto -m "not live_provider" --max-worker-restart=0 -o faulthandler_timeout=600 -ra --durations=25
+        env:
+          CAOS_TEST_POSTGRES_URL: postgresql://postgres:caos@localhost:5432/caos
+          # A store suite that skipped is not a store suite that passed.
+          CAOS_REQUIRE_POSTGRES: "1"
+      - run: uv run python scripts/scan_floors.py coverage.xml --cobertura
+      - run: uv run pytest --no-cov tests/test_postgres_races.py
+        env:
+          CAOS_TEST_POSTGRES_URL: postgresql://postgres:caos@localhost:5432/caos
+          CAOS_REQUIRE_POSTGRES: "1"
+      - run: uv run python -B vendor/deploy-v/verify_package.py
+
+  security:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with: {fetch-depth: 0}
+      - uses: astral-sh/setup-uv@bec219d24cd3e171d82865faccec33120bb574f4 # v10.1.0
+        with: {version: "0.12.5", enable-cache: true}
+      - run: uv sync --locked --all-groups
+      # `|| true` so the floor check, not bandit's exit code, is the verdict:
+      # a report that parsed nothing must fail even when it found nothing,
+      # and one that carries a finding fails on that finding below (N29) --
+      # a second, bare `bandit -r caos scripts icm` once ran the same scan
+      # again just to let its own exit code be the verdict too.
+      - run: uv run bandit -r caos scripts icm -f json -o bandit.json || true
+      - run: |
+          uv run python scripts/scan_floors.py bandit.json --no-parse-errors \
+                 --cover caos scripts icm --unscanned tests
+      # The environment `uv sync --locked` built from the hashed lock is what runs.
+      - run: uv run pip-audit --strict
+      # The whole history, as gate A12 runs it locally. The action scans only
+      # the push's commit range and failed on the first push over git's own
+      # stderr while finding nothing; the image is digest-pinned like postgres.
+      - run: >-
+          docker run --rm -u "$(id -u):$(id -g)"
+          -e GIT_CONFIG_COUNT=1 -e GIT_CONFIG_KEY_0=safe.directory -e GIT_CONFIG_VALUE_0=/repo
+          -v "$PWD:/repo" -w /repo
+          ghcr.io/gitleaks/gitleaks:v8.24.3@sha256:e1b35e12a8c6fa8901f060459cfb6b2fc4c484d3afbe3b029733a3bbfab07055
+          git --no-banner .
+
+  bundle:
+    # The bundle against the loopback workspace (D28): validate, deploy and
+    # run through the real CLI with nothing below HTTP injected. A profile is
+    # never needed here; the enterprise deploy is scripts/enterprise_deploy.py.
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    services:
+      postgres:
+        # The shipped set's boot below needs a store. Digest-pinned, as in test.
+        image: postgres@sha256:18cfe3ef5e6815560c98237d6216d1e5119702fb0f3894c8785dd58b8bbe5d73
+        env: {POSTGRES_PASSWORD: caos, POSTGRES_DB: caos}
+        options: >-
+          --health-cmd pg_isready --health-interval 5s --health-retries 10
+        ports: ["5432:5432"]
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: astral-sh/setup-uv@bec219d24cd3e171d82865faccec33120bb574f4 # v10.1.0
+        with: {version: "0.12.5", enable-cache: true}
+      - uses: databricks/setup-cli@d76f84cea9893ce68311a1f33fb0c95af6c963b7 # v1.17.0
+        with: {version: "1.17.0"}
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: "24"
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+      - run: uv sync --locked --all-groups
+      # The export the app serves, built as a deployer builds it (DF-4): a
+      # sync that drops its scripts or styles is a file missing from the
+      # deployment record below, not an empty page that passes.
+      - run: npm --prefix frontend ci --ignore-scripts
+      - run: npm --prefix frontend run build
+      # A non-default price travels as `BUNDLE_VAR_model_price` (C1): the CLI
+      # splits a `--var` value on commas.
+      - run: >-
+          BUNDLE_VAR_model_price=databricks-claude-opus-5,0.000007,0.000030,2026-09-23
+          uv run python tests/workspace_stub.py -- databricks bundle validate -t dev
+          --var uc_catalog=main --var uc_schema=caos --var lakebase_project=caos
+      # What the CLI resolved is what was given (DF-4, DF-5): the price
+      # reached the app's configuration, only prod and prod-provisioned name
+      # the production app, and each target binds its own Lakebase kind
+      # (R24-14). The check is the one command's own E2.
+      - run: >-
+          BUNDLE_VAR_model_price=databricks-claude-opus-5,0.000007,0.000030,2026-09-23
+          uv run python tests/workspace_stub.py -- sh -c
+          "databricks bundle validate -t dev -o json --var uc_catalog=main --var uc_schema=caos --var lakebase_project=caos > $RUNNER_TEMP/dev.json
+          && databricks bundle validate -t prod -o json --var uc_catalog=main --var uc_schema=caos --var lakebase_project=caos > $RUNNER_TEMP/prod.json
+          && databricks bundle validate -t dev-provisioned -o json --var uc_catalog=main --var uc_schema=caos --var lakebase_instance=caos-lb > $RUNNER_TEMP/dev-provisioned.json
+          && databricks bundle validate -t prod-provisioned -o json --var uc_catalog=main --var uc_schema=caos --var lakebase_instance=caos-lb > $RUNNER_TEMP/prod-provisioned.json"
+      - run: >-
+          uv run python scripts/enterprise_deploy.py --stage record --evidence "$RUNNER_TEMP/resolved"
+          --step E2 --target dev --price databricks-claude-opus-5,0.000007,0.000030,2026-09-23 --lakebase-project caos
+          --bundle "$RUNNER_TEMP/dev.json"
+      - run: >-
+          uv run python scripts/enterprise_deploy.py --stage record --evidence "$RUNNER_TEMP/resolved"
+          --step E2 --target prod --price databricks-claude-opus-5,0.000007,0.000030,2026-09-23 --lakebase-project caos
+          --bundle "$RUNNER_TEMP/prod.json"
+      - run: >-
+          uv run python scripts/enterprise_deploy.py --stage record --evidence "$RUNNER_TEMP/resolved"
+          --step E2 --target dev-provisioned --price databricks-claude-opus-5,0.000007,0.000030,2026-09-23 --lakebase-instance caos-lb
+          --bundle "$RUNNER_TEMP/dev-provisioned.json"
+      - run: >-
+          uv run python scripts/enterprise_deploy.py --stage record --evidence "$RUNNER_TEMP/resolved"
+          --step E2 --target prod-provisioned --price databricks-claude-opus-5,0.000007,0.000030,2026-09-23 --lakebase-instance caos-lb
+          --bundle "$RUNNER_TEMP/prod-provisioned.json"
+      # Deploy and run under one stub: the run starts the app the deploy created
+      # (the stub seeds none, DP-6).
+      - run: >-
+          uv run python tests/workspace_stub.py -- sh -c
+          "databricks bundle deploy -t dev --var uc_catalog=main --var uc_schema=caos --var lakebase_project=caos
+          && databricks bundle run caos -t dev --var uc_catalog=main --var uc_schema=caos --var lakebase_project=caos"
+      # What the deploy synced is what the app needs (F48): the check reads the
+      # CLI's own record of the files it uploaded.
+      - run: uv run python scripts/check_gate_config.py --shipped .databricks/bundle/dev/deployment.json
+      # The file set a deploy ships, read back from the stub rather than this
+      # checkout, booted as the platform boots it: every health code OK and one
+      # governed LITE run through ChatDatabricks (CF-001). A file the sync
+      # leaves out that the process needs fails here, not on the workspace.
+      - run: uv run python tests/shipped_boot.py
+        env:
+          CAOS_TEST_POSTGRES_URL: postgresql://postgres:caos@localhost:5432/caos
+      # The production target, lock and all, in one stub (C3): validate,
+      # deploy and run the way the one command does; then the Provisioned
+      # pair the same way (R24-14).
+      - run: >-
+          uv run python tests/workspace_stub.py -- sh -c
+          "databricks bundle validate -t prod --var uc_catalog=main --var uc_schema=caos --var lakebase_project=caos
+          && databricks bundle deploy -t prod --var uc_catalog=main --var uc_schema=caos --var lakebase_project=caos
+          && databricks bundle run caos -t prod --var uc_catalog=main --var uc_schema=caos --var lakebase_project=caos"
+      - run: uv run python scripts/check_gate_config.py --shipped .databricks/bundle/prod/deployment.json
+      - run: >-
+          uv run python tests/workspace_stub.py -- sh -c
+          "databricks bundle validate -t dev-provisioned --var uc_catalog=main --var uc_schema=caos --var lakebase_instance=caos-lb
+          && databricks bundle deploy -t dev-provisioned --var uc_catalog=main --var uc_schema=caos --var lakebase_instance=caos-lb
+          && databricks bundle run caos -t dev-provisioned --var uc_catalog=main --var uc_schema=caos --var lakebase_instance=caos-lb"
+      - run: uv run python scripts/check_gate_config.py --shipped .databricks/bundle/dev-provisioned/deployment.json
+      - run: >-
+          uv run python tests/workspace_stub.py -- sh -c
+          "databricks bundle validate -t prod-provisioned --var uc_catalog=main --var uc_schema=caos --var lakebase_instance=caos-lb
+          && databricks bundle deploy -t prod-provisioned --var uc_catalog=main --var uc_schema=caos --var lakebase_instance=caos-lb
+          && databricks bundle run caos -t prod-provisioned --var uc_catalog=main --var uc_schema=caos --var lakebase_instance=caos-lb"
+      - run: uv run python scripts/check_gate_config.py --shipped .databricks/bundle/prod-provisioned/deployment.json
+
+  size:
+    # AI PRs carry ~1.7x the issues of human PRs, and density rises with size.
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    if: github.event_name == 'pull_request'
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with: {fetch-depth: 0}
+      # FP-40: github.base_ref is a PR's own base-branch name and travels
+      # through env:, not spliced into the run: script -- the other job's
+      # own pattern for the same value.
+      - run: python3 scripts/check_pr_size.py "origin/$BASE_REF"
+        env:
+          BASE_REF: ${{ github.base_ref }}
+
+  frontend:
+    # Every step runs from the root and names frontend/ itself: a job-level
+    # `defaults.run.working-directory` is a default every gate in the job
+    # would inherit, and check_gate_config refuses one (review 4, W2).
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: "24"
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+      - run: npm --prefix frontend ci --ignore-scripts
+      - run: npm --prefix frontend run lint
+      - run: npm --prefix frontend run typecheck
+      - run: npm --prefix frontend run test
+      - run: npm --prefix frontend run build
+      # FP-21 / CF-063: these two security tests (the dev proxy strips a
+      # forged client identity; a production build carries no fixture or
+      # demo route) skip without Node, the `test` job installs no Node,
+      # and this job never ran pytest -- so neither ever ran anywhere.
+      # CAOS_REQUIRE_NODE turns that skip into a failure (-rs also prints
+      # the reason if one somehow still fires), the same pattern
+      # CAOS_REQUIRE_POSTGRES already uses for the store suite.
+      - uses: astral-sh/setup-uv@bec219d24cd3e171d82865faccec33120bb574f4 # v10.1.0
+        with: {version: "0.12.5", enable-cache: true}
+      - name: frontend security tests that need a real Node and build
+        env:
+          CAOS_REQUIRE_NODE: "1"
+        run: |
+          uv sync --locked --all-groups
+          uv run pytest -rs --no-cov \
+            "tests/test_frontend_modes.py::test_the_dev_proxy_strips_client_identity_and_injects_the_local_actor" \
+            "tests/test_frontend_modes.py::test_production_build_contains_no_fixture_or_demo_route"
+      - name: nine section routes in the export
+        run: |
+          for s in directory upload analysis book run model report committee admin; do
+            test -f "frontend/dist/$s/index.html" || { echo "missing frontend/dist/$s/index.html"; exit 1; }
+          done
+      - run: npm --prefix frontend run build:demo
+      - run: npx --prefix frontend --no-install jscpd --threshold 3 --min-lines 10 --ignore "**/node_modules/**,**/dist/**,**/dist-demo/**" caos scripts icm frontend/src
+      - uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ~/.cache/ms-playwright
+          key: playwright-${{ hashFiles('frontend/package-lock.json') }}
+      - run: frontend/node_modules/.bin/playwright install --with-deps
+      - run: npm --prefix frontend run a11y
+      - run: npm --prefix frontend run test:workbench

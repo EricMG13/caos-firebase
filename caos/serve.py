@@ -1,0 +1,124 @@
+"""The one process a Databricks App runs: the API, with the worker beside it.
+
+`app.yaml` runs `python -m caos.serve`. The bind host comes from the
+environment (`CAOS_BIND_HOST`; the App sets the platform's all-interfaces
+address, local development keeps loopback) and the port from
+`DATABRICKS_APP_PORT`, which the platform injects. The worker thread starts
+only when `CAOS_WORKER_IN_PROCESS=1` (D11), and a refused configuration is
+printed as its typed code while the API still serves.
+
+On the platform's SIGTERM uvicorn stops taking connections, gives the open
+ones `GRACEFUL_SECONDS` to end, then runs the app's shutdown, which drains
+the worker (DP-4): `stopping` is set and the thread is given
+`LIMIT_JOIN_SECONDS` to finish the node in flight, all inside the grace the
+platform allows before it kills the process. A call still on the wire past
+that is abandoned with its reservation held and the run is reclaimed after
+its lease. uvicorn re-raises the signal after shutdown, so nothing after
+`uvicorn.run` can be relied on to run; the drain lives in the lifespan.
+"""
+
+from __future__ import annotations
+
+import logging
+import os
+import sys
+from collections.abc import Callable
+from threading import Event, Lock, Thread
+
+import uvicorn
+
+from caos.api.app import on_shutdown
+from caos.api.stream import STREAM_LIMIT
+from caos.graph.worker import start_in_process
+
+BIND_HOST = "CAOS_BIND_HOST"
+PORT = "DATABRICKS_APP_PORT"
+LOCAL_PORT = 8000
+# One uvicorn worker, a bounded number of connections (legacy §53). Not
+# uvicorn's own `limit_concurrency` any more (CF-051): it counts idle
+# keep-alive connections too (DP-7) and rejects outside the ASGI app, with no
+# security headers and no typed body. `caos.api.edge.EdgeGuard` bounds the
+# same number of in-flight requests instead; this stays as the figure the
+# tests that drive a real uvicorn socket of their own still reference.
+LIMIT_CONCURRENCY = STREAM_LIMIT + 40
+# Inside the platform's grace before SIGKILL, with the drain after it.
+GRACEFUL_SECONDS = 2
+LIMIT_JOIN_SECONDS = 12
+SERVER_LOGGER = "uvicorn.error"
+# CF-051. A conservative keep-alive: how long a connection may sit idle
+# between one response and its next request. That is the only timer uvicorn
+# 0.52.4's h11 protocol arms (`on_response_complete`), and it is disarmed the
+# moment a byte arrives (W3): nothing here bounds, in seconds, a connection
+# still sending its first request's headers, and nothing bounds a request
+# whose body is still arriving. `h11_max_incomplete_event_size` bounds the
+# slow-header shape in bytes, uvicorn's one lever on it; a body is bounded by
+# the edge's own receive deadline instead (`caos.api.edge.BODY_GRACE_SECONDS`
+# and `BODY_MIN_BYTES_PER_SECOND`). Conservative placeholders; the tuned
+# production figures are N26 (enterprise).
+TIMEOUT_KEEP_ALIVE_SECONDS = 5
+HEADER_READ_LIMIT_BYTES = 16 * 1024
+
+
+class _NoExceptionText(logging.Filter):
+    """uvicorn logs an unhandled fault with its traceback, which carries
+    `str(exc)` and so may carry document text (AS-6). The edge already
+    writes the class and the frame; the traceback is dropped here."""
+
+    def filter(self, record: logging.LogRecord) -> bool:
+        if record.exc_info is not None:
+            record.exc_info = None
+            record.exc_text = None
+        return True
+
+
+def install_log_filter() -> None:
+    """Strip exception text from uvicorn's error log (AS-6); idempotent."""
+    logger = logging.getLogger(SERVER_LOGGER)
+    if not any(isinstance(f, _NoExceptionText) for f in logger.filters):
+        logger.addFilter(_NoExceptionText())
+
+
+def drain_once(stopping: Event, worker: Thread | None) -> Callable[[], None]:
+    """The worker drain, run at most once however many paths reach it.
+
+    SIGTERM reaches the lifespan's shutdown hook only, since uvicorn re-raises
+    it; SIGINT returns from `uvicorn.run` and reaches the `finally` too, which
+    joined a worker mid-call twice (ST-15).
+    """
+    once = Lock()
+
+    def drain() -> None:
+        if not once.acquire(blocking=False):
+            return
+        stopping.set()
+        if worker is None:
+            return
+        worker.join(timeout=LIMIT_JOIN_SECONDS)
+        word = "abandoned" if worker.is_alive() else "stopped"
+        print(f"worker {word}", file=sys.stderr)
+
+    return drain
+
+
+def main() -> int:
+    install_log_filter()
+    stopping = Event()
+    drain = drain_once(stopping, start_in_process(stopping))
+    on_shutdown(drain)
+    try:
+        uvicorn.run(
+            "caos.api.site:application",
+            host=os.environ.get(BIND_HOST) or "127.0.0.1",
+            port=int(os.environ.get(PORT) or LOCAL_PORT),
+            timeout_keep_alive=TIMEOUT_KEEP_ALIVE_SECONDS,
+            h11_max_incomplete_event_size=HEADER_READ_LIMIT_BYTES,
+            timeout_graceful_shutdown=GRACEFUL_SECONDS,
+            proxy_headers=False,
+        )
+    finally:
+        drain()
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())

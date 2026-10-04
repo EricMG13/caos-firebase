@@ -69,9 +69,11 @@ A third edge mode, `firebase`, selected by `CAOS_FIREBASE_PROJECT=<project id>`.
 refuses `EDGE_CONFIG_INVALID` if it is set together with `DATABRICKS_APP_NAME`, or
 without `CAOS_PUBLIC_ORIGIN` and `CAOS_ROLE_MAP`.
 
-- **Token source.** `Authorization: Bearer <ID token>` on every request; on `GET`
-  only, the `__session` cookie as a fallback (for `EventSource`). An unsafe request
-  must carry the header. Origin and `Sec-Fetch-Site` checks stay as they are.
+- **Token source.** `Authorization: Bearer <ID token>` when present, else the
+  `__session` cookie (`SameSite=Strict`), on every method, so `EventSource` and every
+  existing `fetch` work unchanged. Cross-site unsafe requests are already refused by
+  the Origin and `Sec-Fetch-Site` checks, which stay as they are, with
+  `CAOS_PUBLIC_ORIGIN` required in this mode.
 - **Verification** (`pyjwt` + `cryptography`, both already locked): RS256 only; `kid`
   among Google's certificates at
   `https://www.googleapis.com/robot/v1/metadata/x509/securetoken@system.gserviceaccount.com`,

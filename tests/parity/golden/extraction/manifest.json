@@ -1,0 +1,21 @@
+{
+  "cases": {
+    "ccl-fy2025-market-dislocation__CCL_FINRA_TRACE_143658BY7_2026-09-19.txt": "a66bcea66a6aa7b42c45f82d6f0c6f9c299e00e00d629793d9f9854a94ce5aca",
+    "ccl-fy2025-relative-value__NCLH_Q4_2025_Earnings_Release.txt": "f075571d4221a3e7692f549d36f650cc1854dbad98b98823442a982e9d26a7a4",
+    "ccl-fy2025-relative-value__RCL_Q4_2025_Earnings_Release.txt": "7b7ccef0df20868b57051f67e7dd202121b020e0ed1b91c7bff04fd7340e615d",
+    "synthetic_blank_lines_only": "314718c1ce9c4a4e293147470967d983af7d9086e1323943acc62a9ca9019e09",
+    "synthetic_column_gap": "3ed63b8ab636de8d4f8f07d5a8dc6a1e9f1a75a90d7350997cc747eccf0de8b2",
+    "synthetic_empty": "925e463e94341f27cc65237fa09a0374426fd0179d1920534633cf8c399b4479",
+    "synthetic_long_run_is_cut": "272dffb87ac271aaeaee6a5357b30a778eec5878501787061676cc786c9835fb",
+    "synthetic_not_utf8": "d01fe3a9123715b0a15a50eef88375dd78884e3d6cd0b6129a868b3fbdb38629",
+    "synthetic_second_page": "e320c4f2770117d2571e01699e35a8eb14b56e736f21d71453186089934b1fb4",
+    "synthetic_single_word": "fb15b767b8ffe6baf3a4c30456765e0287f18ba2249bb79dd2f4197f740b3051",
+    "synthetic_tab_and_no_break_space": "234ca7c4350fb7b97f55b130147effc9dafd2213e0c2994bef9a7062a92fb881",
+    "synthetic_tab_column": "9f64f1868a3c8d4c25176f8e20039f616c377d2efeaf805de0ebfbea4f120d2c",
+    "synthetic_two_paragraphs": "23736349974519c4fa65ef3d138cfe1088036c75fadda4eb20365b4775bcbfc2",
+    "synthetic_unicode_words": "3150107d62e9d4892d5efe5fcb4a294e0e59386faa6867c0e4d15823e68ebda7",
+    "synthetic_windows_newlines": "d511807758371fc0aac06a4b57449cf987c3075c6f449825aecd5b36e3e8eee8"
+  },
+  "group": "extraction",
+  "package": "server"
+}

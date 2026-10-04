@@ -1,0 +1,521 @@
+// One screen. The chrome never changes; only the body does.
+import {
+  Suspense,
+  useCallback,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+  type ComponentType,
+} from "react";
+import { useSearchParams } from "react-router";
+import {
+  INITIAL,
+  accepts,
+  analyticalIdentity,
+  displayedRunIdOf,
+  issue,
+  navigate,
+  refetches,
+  tailed,
+  ticket,
+  withWithdrawals,
+  withdrawalsOf,
+  type Authority,
+} from "./authority";
+import { focusSectionHeading, pageTitle } from "./heading";
+import { SECTION_LABELS, committeeRevisionOf, isEnabledSection, sectionPath } from "./sections";
+import { VisibleSnapshotContext, type VisibleSnapshot } from "./snapshot";
+import { LedgerProvider } from "./ledger";
+import { eventsUrl, openTail } from "./sse";
+import {
+  OFFLINE_WORDING,
+  fetchSection,
+  sectionUrl,
+  selectionNeeded,
+  type RegionStatus,
+  type WorkspaceDocument,
+} from "./transport";
+import { SECTION_VIEWS, preloadView } from "./views";
+import { DocumentReadContext } from "./useDocumentRefetch";
+import { AppShell } from "@/chrome/AppShell";
+import { AppSidebar } from "@/chrome/AppSidebar";
+import { QualificationStrip } from "@/chrome/QualificationStrip";
+import { SectionPanel, SectionTabs } from "@/chrome/SectionTabs";
+import { SectionSummary } from "@/chrome/SectionSummary";
+import { SiteHeader } from "@/chrome/SiteHeader";
+import { composeChrome, markDisabled } from "@/chrome/compose";
+import { fallbackChrome } from "@/chrome/fallback";
+import { EvidenceProvider } from "@/evidence/EvidenceContext";
+import { ReportDraftProvider } from "@/sections/report/draft";
+import { Announcer } from "@/states/Announcer";
+import { NotLive, PageAlert } from "@/states/PageAlert";
+import { RegionState } from "@/states/RegionState";
+import { SectionBoundary } from "@/states/SectionBoundary";
+import { SurfaceState } from "@/ds/SurfaceState";
+import type { Chrome, Section } from "@/wire";
+
+const LOADING: RegionStatus = { kind: "loading" };
+/** Sections about the book as a whole rather than one case. */
+const PORTFOLIO = new Set<Section>(["directory", "book"]);
+const UNAVAILABLE: RegionStatus = { kind: "unavailable" };
+
+/** The chrome composed for a v1 document. A disabled section never fetches,
+    so it never reaches here with a document to compose from. */
+function chromeOf(section: Section, status: RegionStatus): Chrome | null {
+  if (!("document" in status)) return null;
+  return isEnabledSection(section) ? composeChrome(section, status.document) : null;
+}
+
+interface Keyed<T> {
+  key: string;
+  value: T;
+}
+
+/** What the region holds: the displayed answer, a newer one about a different
+    analytical identity that waits for Reload (decision 6), and the refetch
+    that did not answer at all, which is shown beside the displayed document
+    rather than in place of it (finding FE-2). */
+interface Held {
+  displayed: RegionStatus;
+  pending: RegionStatus | null;
+  interrupted: RegionStatus | null;
+}
+
+/** A refetch under the same identity replaces the view; a different identity
+    is held as pending. A refetch that answers `unavailable` -- a 404, standing
+    lost -- replaces at once: a safety change never waits for Reload. A refetch
+    that answers nothing at all (offline, a refusal) replaces nothing: the
+    reader keeps the document they are reading and the draft they are writing,
+    and is told the view is no longer live. */
+function adopt(section: Section, current: Held | null, next: RegionStatus): Held {
+  const fresh = { displayed: next, pending: null, interrupted: null };
+  if (!current || !("document" in current.displayed)) return fresh;
+  const shown = current.displayed;
+  if (!("document" in next)) {
+    return next.kind === "unavailable" ? fresh : { ...current, interrupted: next };
+  }
+  const identity = analyticalIdentity(section, shown.document);
+  if (identity === null || identity === analyticalIdentity(section, next.document)) return fresh;
+  return { displayed: shown, pending: next, interrupted: null };
+}
+
+/** What the reader is told when a refetch did not answer: the typed code where
+    there was one, never engine text. */
+function interruption(status: RegionStatus): string {
+  const why = status.kind === "error" ? `${status.refusal.code}. ` : `${OFFLINE_WORDING} `;
+  return `${why}This view is the last document the server served, and no longer updates on its own.`;
+}
+
+const PAUSED_WORDING =
+  "Live updates paused. The event stream is not connected; this view reconnects on its own.";
+
+/** The displayed document, marked stale over a pending one and carrying that
+    one's withdrawals, never its figures. */
+function visible(held: Held): RegionStatus {
+  const { displayed, pending } = held;
+  if (!pending || !("document" in displayed) || !("document" in pending)) return displayed;
+  return {
+    kind: "stale",
+    document: withWithdrawals(displayed.document, withdrawalsOf(pending.document)),
+  };
+}
+
+export function Workspace({ section }: { section: Section }) {
+  const [params, setParams] = useSearchParams();
+  const caseId = params.get("case");
+  const runId = params.get("run");
+  const revisionId = params.get("revision");
+  const qualificationEvidence = params.get("qualification");
+  const carried = new URLSearchParams();
+  if (caseId) carried.set("case", caseId);
+  if (runId) carried.set("run", runId);
+  if (revisionId) carried.set("revision", revisionId);
+  if (qualificationEvidence) carried.set("qualification", qualificationEvidence);
+  const caseSearch = carried.toString();
+  const fixture = import.meta.env.MODE === "demo" ? params.get("fixture") : null;
+  // A disabled section, or a case section with no case, sends no request and
+  // opens no tail: it is `unavailable` in every mode (brief 4.1, decision 9).
+  const requested =
+    sectionUrl(section, { case: caseId, run: runId, revision: revisionId, fixture }) !== null;
+  // Report and Committee without the run or revision they read are waiting on
+  // the reader, not refused: they say what to pick and where (plan step 1).
+  const need = selectionNeeded(section, { case: caseId, run: runId, revision: revisionId });
+  // Everything the reader sees is keyed on the request that produced it, so a
+  // navigation shows `loading` without a render-time state write. The
+  // qualification hash is not part of it: it binds global evidence the strip
+  // reads for itself and names no section request, so keying on it would tear
+  // the section down — and its open tail with it — for a label change.
+  const key = `${section}|${caseId ?? ""}|${runId ?? ""}|${revisionId ?? ""}|${fixture ?? ""}`;
+  const [held, setHeld] = useState<(Keyed<Held> & { version: number }) | null>(null);
+  const readSequence = useRef(0);
+  const reads = useMemo(
+    () => ({
+      begin: () => (readSequence.current += 1),
+      isCurrent: (version: number) => version === readSequence.current,
+    }),
+    [],
+  );
+  const [sourceEvents, setSourceEvents] = useState<Keyed<number> | null>(null);
+  const [tabChoice, setTabChoice] = useState<Keyed<string> | null>(null);
+  // The section's chunk is fetched beside its document, not after it (N65).
+  useEffect(() => {
+    void preloadView(section);
+  }, [section]);
+  const [tail, setTail] = useState<Keyed<boolean> | null>(null);
+  const authority = useRef<Authority>(INITIAL);
+
+  const reload = useCallback(() => {
+    setHeld((current) =>
+      current?.value.pending
+        ? {
+            key: current.key,
+            version: current.version,
+            value: { displayed: current.value.pending, pending: null, interrupted: null },
+          }
+        : current,
+    );
+    // The button that was pressed is gone with the state it cleared, so focus
+    // lands on the heading of the region it just replaced (finding FE-4).
+    focusSectionHeading();
+  }, []);
+
+  const current = requested && held?.key === key ? held.value : null;
+  const readOrder = useMemo(
+    () => ({ reads, version: held?.key === key ? held.version : 0 }),
+    [reads, held, key],
+  );
+  const status = useMemo<RegionStatus>(() => {
+    if (requested) return current ? visible(current) : LOADING;
+    if (need === null) return UNAVAILABLE;
+    const where = sectionPath(need === "run" ? "run" : "report");
+    return { kind: "choose", need, href: caseSearch ? `${where}?${caseSearch}` : where };
+  }, [requested, current, need, caseSearch]);
+  const latest = current?.pending ?? current?.displayed ?? null;
+  // The refetch that did not answer says the view is not live and replaces
+  // nothing (FE-2).
+  const interrupted = current?.interrupted ?? null;
+  const document = "document" in status ? status.document : null;
+  const displayedRunId = document ? displayedRunIdOf(section, document) : null;
+
+  // The read the tail drives. Set by the load below and read through a ref, so
+  // the tail can follow the run on screen without tearing the read down.
+  const loadRef = useRef<(() => Promise<RegionStatus | null>) | null>(null);
+  // Offline and refused regions ask again through the same one-flight read.
+  const retry = useCallback(() => void loadRef.current?.(), []);
+  // The tail follows the run the reader is looking at. An address that names
+  // no run is answered with the case's latest, and a tail opened on the bare
+  // address carries the case's audit actions and no run's events: the run on
+  // screen would never move (MAX-19). So where the address names none, the
+  // tail waits for the first answer and opens on the run it displays -- a
+  // newer run is still announced by the case half and held for Reload, and
+  // Reload moves the tail with it (decision 6). A view the server says is
+  // gone has nothing to follow.
+  const tailRun = runId ?? displayedRunId;
+  const tailWanted =
+    requested &&
+    caseId !== null &&
+    tailed(section) &&
+    (runId !== null || current !== null) &&
+    status.kind !== "unavailable";
+
+  // A section no event refetches opens no stream -- Directory, and Book,
+  // which is portfolio-scoped and which no case event names. Declared before
+  // the load, so where the address names the run the tail still opens before
+  // the first fetch and a fixture stream's frame counter is reset before the
+  // document it drives.
+  useEffect(() => {
+    if (!tailWanted || caseId === null) return undefined;
+    let open = true;
+    const load = (): Promise<RegionStatus | null> =>
+      open && loadRef.current ? loadRef.current() : Promise.resolve(null);
+    const recheckSources = () => {
+      if (open)
+        setSourceEvents((current) => ({
+          key,
+          value: current?.key === key ? current.value + 1 : 1,
+        }));
+    };
+    const stream = openTail(eventsUrl(caseId, tailRun, fixture), {
+      onEvent: (name) => {
+        if (name === "sources_changed") recheckSources();
+        if (refetches(name, section)) void load();
+      },
+      // Every open, the first included: an event landing between the
+      // document read and the stream's head is not replayed, and the
+      // one-flight rule coalesces the read this doubles (finding FE-9).
+      onOpen: () => {
+        recheckSources();
+        void load();
+      },
+      // A closed stream is a refusal or, in Firefox, a connection that
+      // never opened: EventSource cannot tell them apart. The document
+      // read can, so it decides: a case that is gone stops the tail, and
+      // anything else is waited out and tried again.
+      onRefused: async () => {
+        const answer = await load();
+        return {
+          stop: answer?.kind === "unavailable",
+          retryAfterSeconds: answer?.kind === "error" ? (answer.retryAfterSeconds ?? null) : null,
+        };
+      },
+      onLive: (live) => setTail({ key, value: live }),
+    });
+    return () => {
+      open = false;
+      stream.close();
+    };
+  }, [tailWanted, section, caseId, tailRun, fixture, key]);
+
+  useEffect(() => {
+    if (!requested) return undefined;
+    authority.current = navigate(authority.current, caseId);
+    // At most one fetch in flight; a name arriving mid-flight marks it dirty
+    // and exactly one more fetch follows (decision 5).
+    let flight: { controller: AbortController; dirty: boolean } | null = null;
+
+    // Answers with what the read said, so a refused reconnect can be decided
+    // on the document rather than on the stream EventSource will not describe.
+    const load = (): Promise<RegionStatus | null> => {
+      if (flight) {
+        flight.dirty = true;
+        return Promise.resolve(null);
+      }
+      const mine = { controller: new AbortController(), dirty: false };
+      flight = mine;
+      authority.current = issue(authority.current);
+      const sent = ticket(authority.current);
+      const version = reads.begin();
+      return fetchSection(
+        section,
+        { case: caseId, run: runId, revision: revisionId, fixture },
+        mine.controller.signal,
+      ).then((next) => {
+        // A late response, for a case or run the user has left, is discarded.
+        if (!accepts(authority.current, sent)) return null;
+        flight = null;
+        const latestRead = reads.isCurrent(version);
+        if (latestRead) {
+          setHeld((current) => ({
+            key,
+            version,
+            value: adopt(section, current?.key === key ? current.value : null, next),
+          }));
+        }
+        if (mine.dirty) load();
+        return latestRead ? next : null;
+      });
+    };
+    loadRef.current = load;
+    void load();
+    return () => {
+      if (loadRef.current === load) loadRef.current = null;
+      flight?.controller.abort();
+      flight = null;
+      authority.current = issue(authority.current);
+    };
+  }, [requested, section, caseId, runId, revisionId, fixture, key, reads]);
+
+  // The view is mounted under what it is about, never under `observed_at`, so
+  // an ordinary refresh keeps its local selection (R5).
+  const displayedRevisionId =
+    document && "revision_id" in document.body ? document.body.revision_id : null;
+  const mountKey = `${caseId ?? ""}|${displayedRunId ?? ""}|${displayedRevisionId ?? ""}`;
+  // Report opens on the run on screen, and Committee on a frozen revision of
+  // it, whether or not the address named them: before, both were reachable
+  // only by editing the URL (critique P0).
+  const listed = document && "revisions" in document.body ? document.body.revisions : null;
+  const committeeRevision = listed ? committeeRevisionOf(listed, displayedRevisionId) : revisionId;
+  const railSearch = (id: Section): string => {
+    const query = new URLSearchParams(carried);
+    if ((id === "report" || id === "committee") && !runId && displayedRunId) {
+      query.set("run", displayedRunId);
+    }
+    if (id === "committee") {
+      if (committeeRevision) query.set("revision", committeeRevision);
+      else query.delete("revision");
+    }
+    const text = query.toString();
+    return text ? `?${text}` : "";
+  };
+  const snapshot = useMemo<VisibleSnapshot | null>(
+    () =>
+      document
+        ? {
+            key: `${section}|${caseId ?? ""}|${displayedRunId ?? ""}|${displayedRevisionId ?? ""}`,
+            caseId,
+            displayedRunId,
+            document,
+            withdrawals:
+              latest && "document" in latest ? withdrawalsOf(latest.document) : new Map(),
+            sourcesEpoch: sourceEvents?.key === key ? sourceEvents.value : 0,
+          }
+        : null,
+    [document, section, caseId, displayedRunId, displayedRevisionId, latest, sourceEvents, key],
+  );
+  // A tail the server refused says so while there is still a document it was
+  // following; a region with none is already saying more than that (FE-3).
+  const paused = document !== null && tail?.key === key && !tail.value;
+  const chrome = chromeOf(section, status);
+  // A tab named in the address is the one shown, so a view is linkable and
+  // survives a reload; else the reader's choice, else the view the section
+  // opens on (Analysis: its conclusion), else the first.
+  const tabs = chrome?.tabs ?? [];
+  const addressed = params.get("tab");
+  const activeTab =
+    (addressed && tabs.some((tab) => tab.id === addressed) ? addressed : null) ??
+    (tabChoice?.key === key ? tabChoice.value : null) ??
+    tabs.find((tab) => tab.opens)?.id ??
+    tabs[0]?.id ??
+    null;
+  // The worst module leads: one QA blocked or failed before one accepted with
+  // a warning, and that before one accepted with a limitation.
+  const reviewTab =
+    section === "analysis"
+      ? (tabs.find((tab) => tab.severity === "CRITICAL") ??
+        tabs.find((tab) => tab.severity === "WARNING") ??
+        tabs.find((tab) => tab.severity === "RESTRICTED"))
+      : undefined;
+  const reviewParams = new URLSearchParams(params);
+  if (reviewTab) reviewParams.set("tab", reviewTab.id);
+  const chooseTab = (id: string) => {
+    setTabChoice({ key, value: id });
+    setParams(
+      (current) => {
+        const next = new URLSearchParams(current);
+        next.set("tab", id);
+        return next;
+      },
+      { replace: true },
+    );
+  };
+  const subject = chrome?.subject?.issuer ?? caseId;
+  // The tab says which section of which case is on screen (WCAG 2.4.2).
+  useEffect(() => {
+    globalThis.document.title = pageTitle(SECTION_LABELS[section], subject);
+  }, [section, subject]);
+  // A navigation replaces the region under the control that was activated, so
+  // focus moves to the heading of what arrived rather than falling to the
+  // document (WCAG 2.4.3, finding FE-4). The first render is not a navigation.
+  const arrived = useRef<string | null>(null);
+  useEffect(() => {
+    if (arrived.current !== null && arrived.current !== key) focusSectionHeading();
+    arrived.current = key;
+  }, [key]);
+  // ponytail: one erasure, here rather than nine in the registry. `section`
+  // is a runtime value, so the lookup yields the union of nine differently
+  // typed views and no document satisfies them all; the registry has already
+  // checked each view against its own document, and a disabled section never
+  // reaches this render with a document to mount.
+  const View = SECTION_VIEWS[section] as ComponentType<{
+    document: WorkspaceDocument;
+    tab: string | null;
+  }>;
+  // With no document there is still a section: the header carries its state.
+  const fallback = fallbackChrome(status);
+
+  const label = SECTION_LABELS[section];
+  return (
+    <AppShell
+      section={section}
+      label={label}
+      sidebar={
+        <AppSidebar
+          section={section}
+          entries={markDisabled(chrome?.rail ?? null)}
+          local={chrome?.rail_local ?? null}
+          servedRole={chrome?.served_role ?? null}
+          searchFor={railSearch}
+          subject={chrome?.subject ?? null}
+          caseId={caseId}
+        />
+      }
+      header={
+        <SiteHeader
+          label={label}
+          crumb={
+            chrome?.subject?.issuer ??
+            (caseId ? `Case ${caseId.slice(0, 8)}` : PORTFOLIO.has(section) ? "Portfolio" : null)
+          }
+          subject={chrome?.subject ?? null}
+          ribbon={(chrome ?? fallback).ribbon}
+          tabs={chrome?.tabs.map((tab) => tab.id)}
+          onTab={chooseTab}
+        />
+      }
+    >
+      {/* With no document there is nothing to summarise: the header carries
+          the state, and the region below says it in full. */}
+      {chrome ? (
+        <SectionSummary
+          verdict={chrome.verdict}
+          brief={chrome.brief}
+          ribbon={chrome.ribbon}
+          compact={activeTab !== null}
+          review={
+            reviewTab
+              ? {
+                  code: reviewTab.label,
+                  name: reviewTab.cp ?? reviewTab.label,
+                  note: reviewTab.note ?? null,
+                  failed: reviewTab.severity === "CRITICAL",
+                  to: `?${reviewParams.toString()}`,
+                }
+              : undefined
+          }
+        />
+      ) : null}
+      <QualificationStrip evidenceSha256={qualificationEvidence} />
+      <Announcer>
+        {status.kind === "offline" ? <PageAlert sentence={OFFLINE_WORDING} /> : null}
+        {/* Neither replaces the document: they say it is not live. */}
+        {interrupted ? <NotLive mark="refresh" sentence={interruption(interrupted)} /> : null}
+        {paused ? <NotLive mark="tail" sentence={PAUSED_WORDING} /> : null}
+        {/* After the banners, directly before the panel: the wide layout puts the
+            index beside the panel, and a banner between them left the panel
+            below a blank column. */}
+        <SectionTabs
+          label={label}
+          tabs={chrome?.tabs ?? []}
+          active={activeTab}
+          onSelect={chooseTab}
+        />
+        <VisibleSnapshotContext.Provider value={snapshot}>
+          {/* The evidence surface is bound to the section it was opened
+              on (brief 4.4, decision 9): the key closes it on a section
+              change, which the workspace itself no longer does -- the sidebar
+              outlives a navigation so the link that was activated keeps
+              its place (finding FE-4). */}
+          <EvidenceProvider key={section}>
+            <ReportDraftProvider key={`${caseId ?? ""}|${runId ?? displayedRunId ?? ""}`}>
+              {/* The snapshot ledger outlives the documents a section renders,
+                so it sits above the boundary and the mount key. */}
+              <LedgerProvider>
+                <RegionState status={status} onReload={reload} onRetry={retry} section={section}>
+                  {(doc) => (
+                    // A render failure is about the document that caused it:
+                    // the next one served clears it, without waiting for a
+                    // navigation to unmount the boundary.
+                    <SectionBoundary key={mountKey} resetOn={doc.observed_at}>
+                      {/* A view whose chunk is still in flight reads as the
+                        region loading, and a failed one meets the boundary.
+                        Inside the panel, so the tabs never name a panel that
+                        is not on the page while it loads. */}
+                      <SectionPanel tab={activeTab}>
+                        <Suspense fallback={<SurfaceState kind="loading" />}>
+                          <DocumentReadContext.Provider value={readOrder}>
+                            <View key={mountKey} document={doc} tab={activeTab} />
+                          </DocumentReadContext.Provider>
+                        </Suspense>
+                      </SectionPanel>
+                    </SectionBoundary>
+                  )}
+                </RegionState>
+              </LedgerProvider>
+            </ReportDraftProvider>
+          </EvidenceProvider>
+        </VisibleSnapshotContext.Provider>
+      </Announcer>
+    </AppShell>
+  );
+}

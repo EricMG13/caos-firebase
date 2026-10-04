@@ -1,0 +1,114 @@
+{
+  "cases": [
+    {
+      "label": "czr-2026q2-lite-relative-value",
+      "profile_id": "LITE_CREDIT_22",
+      "selection_id": "LITE_RELATIVE_VALUE",
+      "subject": {
+        "issuer_id": "CZR",
+        "issuer_name": "Caesars Entertainment, Inc.",
+        "reporting_period": "Q2 2026",
+        "analysis_date": "2026-10-02"
+      },
+      "documents": [
+        "documents/CZR_Q2_2026_10Q.txt",
+        "documents/CZR_Q2_2026_Earnings_Release.txt",
+        "documents/CZR_2020_Credit_Agreement.txt",
+        "documents/CZR_2024_650_Senior_Secured_Notes_2032_Indenture.txt",
+        "documents/MGM_Q2_2026_Earnings_Release.txt",
+        "documents/PENN_Q2_2026_Earnings_Release.txt"
+      ],
+      "expects": [
+        {
+          "module_id": "CP-L10",
+          "document_sha256": "f369ce5f1ebeddd9a0d4ce02ce3958112267d8701d1a348dfd6dc82d2034793a",
+          "matched_text": "As of June 30, 2026, the Company had $1.9 billion of available borrowing capacity under the CEI Revolving Credit Facility, after consideration of $96 million in outstanding letters of credit, $56 million committed for regulatory purposes, the outstanding amount, and the reserves described above."
+        },
+        {
+          "module_id": "CP-L10",
+          "document_sha256": "f369ce5f1ebeddd9a0d4ce02ce3958112267d8701d1a348dfd6dc82d2034793a",
+          "matched_text": "Annual maturities of long-term debt | $55 | $114 | $767 | $1,574 | $3,962 | $5,335 | $11,807"
+        },
+        {
+          "module_id": "CP-1C",
+          "document_sha256": "f369ce5f1ebeddd9a0d4ce02ce3958112267d8701d1a348dfd6dc82d2034793a",
+          "matched_text": "Total debt | 11,807 | 11,705 | 11,792"
+        },
+        {
+          "module_id": "CP-1C",
+          "document_sha256": "f369ce5f1ebeddd9a0d4ce02ce3958112267d8701d1a348dfd6dc82d2034793a",
+          "matched_text": "CEI Senior Secured Notes due 2032 | 2032 | 6.50% | 1,500 | 1,487 | 1,486"
+        },
+        {
+          "module_id": "CP-1C",
+          "document_sha256": "b385f76ff631243d1053fa8073ebde4f8886b4a50c9ce34ce3498d6b2ac3e9f8",
+          "matched_text": "Adjusted EBITDA | $920 | $955 | $1,807 | $1,839",
+          "alternatives": [
+            {
+              "document_sha256": "f369ce5f1ebeddd9a0d4ce02ce3958112267d8701d1a348dfd6dc82d2034793a",
+              "matched_text": "Total | $920 | $955 | $1,807 | $1,839"
+            },
+            {
+              "document_sha256": "f369ce5f1ebeddd9a0d4ce02ce3958112267d8701d1a348dfd6dc82d2034793a",
+              "matched_text": "Total Adjusted EBITDA | $920 | $955 | $1,807 | $1,839"
+            },
+            {
+              "document_sha256": "f369ce5f1ebeddd9a0d4ce02ce3958112267d8701d1a348dfd6dc82d2034793a",
+              "matched_text": "Adjusted EBITDA | $920 | $955 | $1,807 | $1,839"
+            },
+            {
+              "document_sha256": "b385f76ff631243d1053fa8073ebde4f8886b4a50c9ce34ce3498d6b2ac3e9f8",
+              "matched_text": "Consolidated Adjusted EBITDA of $920 million versus $955 million for the comparable prior-year period."
+            },
+            {
+              "document_sha256": "b385f76ff631243d1053fa8073ebde4f8886b4a50c9ce34ce3498d6b2ac3e9f8",
+              "matched_text": "Caesars | $920 | $955 | (3.7)%"
+            }
+          ]
+        },
+        {
+          "module_id": "CP-1C",
+          "document_sha256": "795ac68aa1c51a7e0a6799a6e1ca053ee597dc9a1a9a6550a2438280a6e76cdb",
+          "matched_text": "Long-term debt, net | 6,068,442 | 6,230,141"
+        },
+        {
+          "module_id": "CP-1C",
+          "document_sha256": "795ac68aa1c51a7e0a6799a6e1ca053ee597dc9a1a9a6550a2438280a6e76cdb",
+          "matched_text": "Consolidated Adjusted EBITDA of $610 million in the current quarter compared to $648 million in the prior year quarter"
+        },
+        {
+          "module_id": "CP-1C",
+          "document_sha256": "4d12fff94b066f73e6eccce84eec937e8fd4fdc38d6061704db66a40511a210c",
+          "matched_text": "Traditional net leverage (1) | 2.9x | 4.5x"
+        }
+      ],
+      "expects_ready": [
+        "CP-L10",
+        "CP-1C"
+      ],
+      "expects_projection": [
+        {
+          "module_id": "CP-L10",
+          "field": "decision_scope",
+          "value": "SCREENING_ONLY"
+        },
+        {
+          "module_id": "CP-1C",
+          "field": "decision_scope",
+          "value": "SCREENING_ONLY"
+        }
+      ],
+      "expects_register": [
+        {
+          "module_id": "CP-L10",
+          "register_id": "TL10.2",
+          "row_key": {
+            "topic_id": "LIQUIDITY_MATURITIES"
+          },
+          "column": "evidence_status",
+          "expected": "SUFFICIENT"
+        }
+      ]
+    }
+  ]
+}
