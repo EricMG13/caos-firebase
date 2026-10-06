@@ -144,4 +144,8 @@ The uid is on the Authentication, Users page. Repeat per user.
 
 `bash scripts/container_smoke.sh` builds the image and boots it against a throwaway
 database on the local test Postgres (`docker compose up -d --wait`, port 55437),
-with firebase mode and dummy credentials; it needs no real credential.
+with firebase mode and dummy credentials; it needs no real credential, but it does need
+outbound internet access: the identity health probe fetches Google's signing certificates,
+and an offline run ends "health never answered ready". The Docker VM disk is shared with
+other containers, so before building the smoke measures the VM's free space and refuses
+to build under `SMOKE_MIN_FREE_GB` (default 5): never fill the shared Docker disk.
