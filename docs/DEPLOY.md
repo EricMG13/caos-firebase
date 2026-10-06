@@ -37,7 +37,7 @@ Proves: each command exits 0; `gcloud sql instances list` shows `caos-pg` RUNNAB
 DBPW=$(openssl rand -hex 24); gcloud sql users create caos --instance=caos-pg --password="$DBPW"
 printf 'postgresql://caos:%s@/caos?host=/cloudsql/%s:%s:caos-pg' "$DBPW" $PROJECT $REGION \
   | gcloud secrets create caos-database-url --data-file=-; unset DBPW
-gcloud secrets create openrouter-key --data-file=-    # paste the key, then Ctrl-D
+read -rs KEY && printf %s "$KEY" | gcloud secrets create openrouter-key --data-file=-; unset KEY   # paste the key, Enter; nothing is echoed
 ```
 
 Proves: `gcloud secrets list` shows both names (it never shows a value).
@@ -87,7 +87,7 @@ gcloud run deploy caos --image $IMAGE --region $REGION --port 8000 --no-cpu-thro
   --set-secrets OPENROUTER_API_KEY=openrouter-key:latest,CAOS_DATABASE_URL=caos-database-url:latest \
   --set-env-vars "^@^CAOS_BLOB_ROOT=/data/blobs@CAOS_FIREBASE_PROJECT=$PROJECT@CAOS_ROLE_MAP=<owner email>=ANALYST;<viewer email>=READER@CAOS_MODEL_ENDPOINT=openai/gpt-6-luna@CAOS_MODEL_PRICE=openai/gpt-6-luna,0.0000002,0.000001,2026-10-04@CAOS_REASONING_EFFORT=high@CAOS_PROVIDER_ORDER=openai@CAOS_PUBLIC_ORIGIN=$ORIGIN"
 URL=$(gcloud run services describe caos --region $REGION --format='value(status.url)')
-echo "$URL"   # confirm it equals $ORIGIN; if not, redeploy with CAOS_PUBLIC_ORIGIN=$URL
+echo "$URL"   # compare with $ORIGIN; if they differ, stop and report (never set the legacy *.a.run.app URL)
 ```
 
 The model price is the owner's 2026-10-03 figure; change it only on the owner's word.
@@ -107,10 +107,10 @@ curl -sS -X POST "https://identitytoolkit.googleapis.com/v1/projects/$PROJECT/ac
 
 The uid is on the Authentication, Users page. Repeat per user.
 
-## 8. Smoke through the service URL
+## 8. Smoke through the service origin
 
-- `curl -s $URL/api/health`: every code OK.
-- `curl -s -o /dev/null -w '%{http_code}' $URL/api/cases`: 401 without a token.
+- `curl -s $ORIGIN/api/health`: status ready, every code OK.
+- `curl -s -o /dev/null -w '%{http_code}' $ORIGIN/api/v1/book`: 401 NOT_AUTHENTICATED without a token.
 - Sign in as the Reader: cannot start a run.
 - Sign in as the owner: upload one small public filing (for example from
   `qualification/czr-*`), start a LITE run; the run stream stays open past 60 s to

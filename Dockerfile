@@ -11,7 +11,7 @@ RUN npm --prefix frontend run build
 
 FROM python:3.13-slim AS app
 COPY --from=ghcr.io/astral-sh/uv:0.12.5 /uv /usr/local/bin/uv
-ENV UV_COMPILE_BYTECODE=1 UV_LINK_MODE=copy UV_PYTHON_DOWNLOADS=never
+ENV UV_COMPILE_BYTECODE=1 UV_LINK_MODE=copy UV_PYTHON_DOWNLOADS=never HOME=/tmp
 WORKDIR /app
 COPY pyproject.toml uv.lock .python-version ./
 RUN uv sync --locked --no-dev
