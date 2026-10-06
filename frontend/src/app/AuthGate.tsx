@@ -6,6 +6,9 @@ import { auth, writeSessionCookie } from "./firebase";
 
 type Gate = "checking" | "signed-out" | "signed-in";
 
+/** The SDK refreshes a token only when it is asked for one inside its last five minutes. */
+const REFRESH_MS = 5 * 60 * 1000;
+
 /** Children when no project is configured or a token is held; else the sign-in form. */
 export function AuthGate({
   children,
@@ -17,13 +20,44 @@ export function AuthGate({
   const [gate, setGate] = useState<Gate>(client ? "checking" : "signed-in");
   useEffect(() => {
     if (!client) return undefined;
-    return onIdTokenChanged(client, (user) => {
-      void (user ? user.getIdToken() : Promise.resolve(null)).then((token) => {
-        writeSessionCookie(token);
-        setGate(token ? "signed-in" : "signed-out");
-      });
+    let latest = 0;
+    const unsubscribe = onIdTokenChanged(client, (user) => {
+      const mine = ++latest;
+      const read = user
+        ? user.getIdTokenResult().then((result) => ({
+            token: result.token,
+            maxAge: Math.max(
+              0,
+              Math.floor((Date.parse(result.expirationTime) - Date.now()) / 1000),
+            ),
+          }))
+        : Promise.resolve(null);
+      read
+        .catch(() => null)
+        .then((held) => {
+          if (mine !== latest) return;
+          writeSessionCookie(held ? held.token : null, held?.maxAge);
+          setGate(held ? "signed-in" : "signed-out");
+        });
     });
+    return () => {
+      latest += 1;
+      unsubscribe();
+    };
   }, [client]);
+  useEffect(() => {
+    if (!client || gate !== "signed-in") return undefined;
+    const refresh = () => void client.currentUser?.getIdToken().catch(() => undefined);
+    const onVisible = () => {
+      if (document.visibilityState === "visible") refresh();
+    };
+    const timer = setInterval(refresh, REFRESH_MS);
+    document.addEventListener("visibilitychange", onVisible);
+    return () => {
+      clearInterval(timer);
+      document.removeEventListener("visibilitychange", onVisible);
+    };
+  }, [client, gate]);
   if (gate === "signed-in") return <>{children}</>;
   if (gate === "checking" || !client) return <p role="status">Checking sign-in…</p>;
   return <SignIn client={client} />;
