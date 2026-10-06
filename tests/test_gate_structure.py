@@ -316,7 +316,16 @@ def test_a_committed_host_or_auth_key_in_the_bundle_is_refused(tmp_path: Path) -
 
 # Acceptance row A28's scope: the package the App runs, the agent definitions
 # and vendored skills its prompts are built from, and the App's own config.
-OPENROUTER_FREE = ("caos", "icm", ".claude/skills", "databricks.yml", "app.yaml")
+# One exemption (D8): `caos/models.py`, the one production model seam, which
+# answers through OpenRouter (D5); every other path in scope stays free of it.
+OPENROUTER_FREE = (
+    "caos",
+    ":(exclude)caos/models.py",
+    "icm",
+    ".claude/skills",
+    "databricks.yml",
+    "app.yaml",
+)
 
 
 def test_openrouter_is_named_only_under_tests() -> None:

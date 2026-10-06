@@ -39,8 +39,8 @@ from caos.graph.route import ResolvedRoute, route_digest
 from caos.graph.runtime import Execution, Provider, ProviderResult, run_route
 from caos.methodology.bundle import Bundle
 from caos.methodology.runner import ModuleProvider
-from caos.models import ChatCompletions, completions
-from caos.pricing import ModelPrice, model_choices
+from caos.models import ChatCompletions, completions, provider_order
+from caos.pricing import ModelPrice, model_choices, reasoning_effort
 from caos.pricing import price_from_environment as price_from_environment
 from caos.provider import CompletionProvider, resend_checked
 from caos.refusals import Refusal, RefusalCode
@@ -201,7 +201,13 @@ def approved(choices: Mapping[str, ModelPrice]) -> ProviderFor:
     def provider_for(price: ModelPrice) -> ChatCompletions:
         if price.model not in choices:
             raise Refusal(RefusalCode.PROVIDER_NOT_CONFIGURED)
-        return completions(price, endpoint=price.model)
+        # What the call sends is what the run's identity names (D8, AR-15).
+        return completions(
+            price,
+            endpoint=price.model,
+            reasoning_effort=reasoning_effort(),
+            provider_order=provider_order(),
+        )
 
     return provider_for
 

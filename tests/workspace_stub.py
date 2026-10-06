@@ -59,6 +59,8 @@ from check_gate_config import bundle_auth_problems
 # compares against; any non-empty bearer passes. The rest are the bundle's
 # own defaults (N23): `databricks.yml` states each once.
 BEARER = "local-stub"
+# The dummy key the production model client sends here (D8); never a real one.
+MODEL_KEY = "sk-or-test"
 _DEFAULTS = _bundle_defaults()
 ENDPOINT = _DEFAULTS["model_endpoint"]
 PRICE = _DEFAULTS["model_price"]
@@ -181,6 +183,16 @@ class WorkspaceStub:
             "DATABRICKS_TOKEN": BEARER,
             "CAOS_MODEL_ENDPOINT": ENDPOINT,
             "CAOS_MODEL_PRICE": PRICE,
+            **self.model_environment(),
+        }
+
+    def model_environment(self) -> dict[str, str]:
+        """The production model client pointed here (D8): the OpenAI-compatible
+        `POST <base>/chat/completions` is the serving route this stub answers,
+        on loopback http, under a dummy key."""
+        return {
+            "CAOS_MODEL_BASE_URL": f"{self.host}/serving-endpoints",
+            "OPENROUTER_API_KEY": MODEL_KEY,
         }
 
     def service_principal_environment(self) -> dict[str, str]:
@@ -196,6 +208,7 @@ class WorkspaceStub:
             "DATABRICKS_CLIENT_SECRET": CLIENT_SECRET,
             "CAOS_MODEL_ENDPOINT": ENDPOINT,
             "CAOS_MODEL_PRICE": PRICE,
+            **self.model_environment(),
         }
 
     def identity(self, bearer: str) -> tuple[str, frozenset[str]]:

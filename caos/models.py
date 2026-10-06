@@ -1,7 +1,7 @@
-"""The one model factory: every production call goes through Databricks AI Gateway.
+"""The one model factory: every production call goes through OpenRouter (D8).
 
 Spec section 3 (D7, D8). `chat_model` returns the LangChain chat model the host
-talks to -- `ChatDatabricks` against the configured serving endpoint -- and
+talks to -- `ChatOpenAI` on OpenRouter's OpenAI-compatible API -- and
 `ChatCompletions` adapts it to the `CompletionProvider` seam the canonical
 executor was built on, so nothing downstream of this module knows which vendor
 answered. Tests inject another `BaseChatModel` through `completions(chat=...)`;
@@ -21,6 +21,7 @@ from __future__ import annotations
 import contextvars
 import hashlib
 import math
+import os
 import threading
 import time
 import warnings
@@ -29,10 +30,12 @@ from contextlib import contextmanager, suppress
 from dataclasses import dataclass, field
 from decimal import Decimal, DecimalException
 from typing import Any
+from urllib.parse import urlsplit
 
 from langchain_core.language_models import BaseChatModel
 from langchain_core.messages import AIMessage, HumanMessage
 from openai import OpenAIError
+from pydantic import SecretStr
 
 # The configuration names live beside the price they configure, so the API,
 # which may not import this module (D4), reads them too.
@@ -40,7 +43,7 @@ from caos.pricing import DEFAULT_ENDPOINT as DEFAULT_ENDPOINT
 from caos.pricing import ENDPOINT_ENV as ENDPOINT_ENV
 from caos.pricing import MODEL_PRICE_ENV as MODEL_PRICE_ENV
 from caos.pricing import REASONING_EFFORT_ENV as REASONING_EFFORT_ENV
-from caos.pricing import ModelPrice, exact_context, model_choices
+from caos.pricing import ModelPrice, exact_context, model_choices, reasoning_effort
 from caos.pricing import configured_endpoint as configured_endpoint
 from caos.provider import (
     MAX_COMPLETION_TOKENS,
@@ -57,7 +60,14 @@ from caos.provider import (
 from caos.refusals import Refusal, RefusalCode
 from caos.store.outcomes import producer_identifier
 
-PLATFORM = "databricks"
+PLATFORM = "openrouter"
+OPENROUTER_BASE_URL = "https://openrouter.ai/api/v1"
+OPENROUTER_KEY_ENV = "OPENROUTER_API_KEY"
+PROVIDER_ORDER_ENV = "CAOS_PROVIDER_ORDER"
+# Where the OpenAI-compatible API is answered (D8): OpenRouter unless set;
+# https, or plain http to this machine alone (a local stand-in).
+MODEL_BASE_URL_ENV = "CAOS_MODEL_BASE_URL"
+LOOPBACK_HOSTS = frozenset(("localhost", "127.0.0.1", "::1"))
 HOST_MINTED = "host-"
 # A 429 reached no model, so it is asked again under the same reservation
 # (DP-5): this many tries in all, waiting `Retry-After` up to the cap.
@@ -78,36 +88,71 @@ _sleep = time.sleep
 _clock = time.monotonic
 
 
-def identity_of(model: str, reasoning_effort: str | None = None) -> str:
+def identity_of(
+    model: str, reasoning_effort: str | None = None, order: tuple[str, ...] = ()
+) -> str:
     """The execution profile a verdict binds (D8), from the names alone, so a
-    caller can refuse an unexpected one before any client is built."""
+    caller can refuse an unexpected one before any client is built: the
+    provider pin, when set, as `model@order` with the names joined by `,`."""
+    named = f"{model}@{','.join(order)}" if order else model
     return "/".join(
-        (PLATFORM, model, reasoning_effort or "none", str(MAX_COMPLETION_TOKENS))
+        (PLATFORM, named, reasoning_effort or "none", str(MAX_COMPLETION_TOKENS))
     )
 
 
+def provider_order() -> tuple[str, ...]:
+    """The providers `CAOS_PROVIDER_ORDER` pins, in order; empty when unpinned."""
+    listed = os.environ.get(PROVIDER_ORDER_ENV, "").split(",")
+    return tuple(name.strip() for name in listed if name.strip())
+
+
+def model_base_url() -> str:
+    """The API's base URL (D8): OpenRouter's unless `CAOS_MODEL_BASE_URL` is
+    set; https, or http to a loopback host, else `PROVIDER_NOT_CONFIGURED`."""
+    url = os.environ.get(MODEL_BASE_URL_ENV) or OPENROUTER_BASE_URL
+    try:
+        parts = urlsplit(url)
+        # A malformed port raises on reading it, here rather than at the call.
+        host, _port = parts.hostname, parts.port
+    except ValueError:
+        raise Refusal(RefusalCode.PROVIDER_NOT_CONFIGURED) from None
+    if not host or parts.username or parts.password:
+        raise Refusal(RefusalCode.PROVIDER_NOT_CONFIGURED)
+    if parts.scheme == "https" or (parts.scheme == "http" and host in LOOPBACK_HOSTS):
+        return url
+    raise Refusal(RefusalCode.PROVIDER_NOT_CONFIGURED)
+
+
 def chat_model(*, endpoint: str | None = None) -> BaseChatModel:
-    """The production chat model: `ChatDatabricks` on the configured endpoint.
+    """The production chat model: OpenRouter's OpenAI-compatible API (D5, D8).
 
-    Imported here rather than at module load so the seam's tests, which inject
-    their own model, never touch the Databricks SDK. Authentication is the
-    SDK's unified chain -- the app's service-principal variables on Databricks
-    Apps, a CLI profile locally -- and no credential is read by this code.
+    The key is read at the call and never stored or printed. The reasoning
+    effort and the provider pin travel in the request body, so the identity
+    a verdict binds names what the model actually received.
     """
-    from databricks_langchain import ChatDatabricks
+    key = os.environ.get(OPENROUTER_KEY_ENV)
+    if not key:
+        raise Refusal(RefusalCode.PROVIDER_NOT_CONFIGURED)
+    base_url = model_base_url()
+    from langchain_openai import ChatOpenAI
 
-    from caos.workspace import workspace_client
-
-    # A read deadline no longer than the whole call's (brief D5, F40, ST-9),
-    # and no retry below the seam: a retry is the caller's reservation. The client
-    # is the process's bounded one (CR-6): the default the library would
-    # build carries the SDK's five-minute discovery budget.
-    return ChatDatabricks(
-        endpoint=endpoint or configured_endpoint(),
-        max_tokens=MAX_COMPLETION_TOKENS,
+    body: dict[str, object] = {}
+    effort = reasoning_effort()
+    if effort:
+        body["reasoning"] = {"effort": effort}
+    order = provider_order()
+    if order:
+        body["provider"] = {"order": list(order), "allow_fallbacks": False}
+    # The same deadline and no retry below the seam as before (F40): a retry
+    # is the caller's reservation.
+    return ChatOpenAI(
+        base_url=base_url,
+        api_key=SecretStr(key),
+        model=endpoint or configured_endpoint(),
+        max_completion_tokens=MAX_COMPLETION_TOKENS,
         timeout=TIMEOUT_SECONDS,
         max_retries=0,
-        workspace_client=workspace_client(),
+        extra_body=body or None,
     )
 
 
@@ -123,11 +168,12 @@ class ChatCompletions:
     model: str
     price: ModelPrice
     reasoning_effort: str | None = None
+    provider_order: tuple[str, ...] = ()
 
     @property
     def qualification_identity(self) -> str:
         """The execution profile a qualification verdict binds (D8)."""
-        return identity_of(self.model, self.reasoning_effort)
+        return identity_of(self.model, self.reasoning_effort, self.provider_order)
 
     def request_bytes(self, prompt: str, *, json_object: bool = False) -> bytes:
         """The request the call is priced on: model, prompt, ceiling, format."""
@@ -419,11 +465,12 @@ def completions(
     chat: BaseChatModel | None = None,
     endpoint: str | None = None,
     reasoning_effort: str | None = None,
+    provider_order: tuple[str, ...] = (),
 ) -> ChatCompletions:
     """The provider a run executes through, priced for exactly its endpoint.
 
-    `chat` is the test seam: a suite passes its own `BaseChatModel` and the
-    Databricks SDK is never imported. Production passes nothing and gets
+    `chat` is the test seam: a suite passes its own `BaseChatModel` and no
+    OpenRouter client is built. Production passes nothing and gets
     `chat_model()`.
     """
     name = endpoint or configured_endpoint()
@@ -434,6 +481,7 @@ def completions(
         name,
         price,
         reasoning_effort,
+        provider_order,
     )
 
 
@@ -441,4 +489,9 @@ def from_environment() -> ChatCompletions:
     """The provider for the configured endpoint, or `PROVIDER_NOT_CONFIGURED`
     for it or for any malformed choice beside it (`model_choices`)."""
     endpoint = configured_endpoint()
-    return completions(model_choices()[endpoint], endpoint=endpoint)
+    return completions(
+        model_choices()[endpoint],
+        endpoint=endpoint,
+        reasoning_effort=reasoning_effort(),
+        provider_order=provider_order(),
+    )

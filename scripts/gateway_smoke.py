@@ -1,11 +1,11 @@
 #!/usr/bin/env python3
-"""One real call through Databricks AI Gateway, on the production path (A31).
+"""One real call through the production model client, on the production path (A31).
 
 Builds the provider exactly as the worker does -- `caos.models.completions`
-with no injected chat model, so the chat model is `ChatDatabricks` on the
-configured endpoint under the SDK's unified auth -- sends one short prompt,
+with no injected chat model, so the chat model is `ChatOpenAI` on the
+configured endpoint and base URL (D8) -- sends one short prompt,
 and prints the endpoint, the chat model class, the response id and the token
-usage. Exits nonzero unless the class is `ChatDatabricks` and the call
+usage. Exits nonzero unless the class is `ChatOpenAI` and the call
 answered: an injected or scripted model can never make this pass. No secret
 is read by this script and none is printed.
 """
@@ -35,7 +35,7 @@ def main() -> int:
     provider = from_environment()
     chat = provider.chat
     kind = type(chat).__name__
-    if kind != "ChatDatabricks":
+    if kind != "ChatOpenAI":
         print(f"gateway_smoke: refused, chat model is {kind}", file=sys.stderr)
         return 2
     message = chat.invoke([HumanMessage(content=PROMPT)])

@@ -104,9 +104,9 @@ L10, CP5 = f"RN-{PROFILE}-{SELECTION}-02-CP-L10", f"RN-{PROFILE}-{SELECTION}-03-
 
 def test_gateway_qualification_identity_names_endpoint_effort_and_ceiling() -> None:
     """D8: the profile a verdict binds is the endpoint, the effort actually
-    sent (`none` until N2 lands) and the completion ceiling; a double names
+    sent (`none` when none is, D8) and the completion ceiling; a double names
     its own `provider`; a bare object names nothing and is refused."""
-    assert _provider_identity(fake_completions(model="m")) == "databricks/m/none/65536"
+    assert _provider_identity(fake_completions(model="m")) == "openrouter/m/none/65536"
     assert _provider_identity(_Completions()) == "qualification-test"
     with pytest.raises(Refusal, match=r"^RUN_INPUT_INVALID$"):
         _provider_identity(object())

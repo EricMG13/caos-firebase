@@ -59,8 +59,8 @@ CHOICES_SEPARATOR = ";"
 # The most models one deployment offers, the configured one included: the
 # bound the Run section's `model_choices` is read under.
 MAX_MODEL_CHOICES = 16
-# Reserved for the effort passthrough (next.md N2): refused while it is not
-# sent, so no identity ever names an effort the model did not receive (AR-15).
+# The reasoning effort sent with every call and named in the identity (D8),
+# so no identity names an effort the model did not receive (AR-15).
 REASONING_EFFORT_ENV = "CAOS_REASONING_EFFORT"
 
 
@@ -191,6 +191,20 @@ def price_from_environment(model: str, value: str) -> ModelPrice:
     return price
 
 
+EFFORTS = ("minimal", "low", "medium", "high", "xhigh")
+
+
+def reasoning_effort() -> str | None:
+    """The reasoning effort sent with every call (D8), or None when unset; a
+    value outside `EFFORTS` is `PROVIDER_NOT_CONFIGURED`, compared exactly."""
+    effort = os.environ.get(REASONING_EFFORT_ENV, "").strip()
+    if not effort:
+        return None
+    if effort not in EFFORTS:
+        raise Refusal(RefusalCode.PROVIDER_NOT_CONFIGURED)
+    return effort
+
+
 def configured_endpoint() -> str:
     """The endpoint the environment names, else the default."""
     return os.environ.get(ENDPOINT_ENV) or DEFAULT_ENDPOINT
@@ -204,11 +218,9 @@ def model_choices() -> dict[str, ModelPrice]:
     are never printed. An endpoint priced twice is refused rather than
     resolved: the two prices would disagree on what its calls cost.
     """
-    if os.environ.get(REASONING_EFFORT_ENV):
-        # Not sent to the endpoint (next.md N2), so not configurable: an
-        # identity naming an effort the model never received would bind
-        # qualification verdicts to a profile that was not run (AR-15).
-        raise Refusal(RefusalCode.PROVIDER_NOT_CONFIGURED)
+    # Validated here so a malformed effort refuses every model (D8); it is
+    # sent with every call and named in the identity (`caos.models`).
+    reasoning_effort()
     endpoint = configured_endpoint()
     configured = os.environ.get(MODEL_PRICE_ENV, "")
     choices = {endpoint: price_from_environment(endpoint, configured)}

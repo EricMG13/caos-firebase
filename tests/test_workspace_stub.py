@@ -82,12 +82,12 @@ def stub(monkeypatch: pytest.MonkeyPatch) -> Iterator[WorkspaceStub]:
         yield served
 
 
-def test_the_gateway_smoke_passes_over_http_with_chat_databricks(
+def test_the_gateway_smoke_passes_over_http_with_chat_openai(
     stub: WorkspaceStub, capsys: pytest.CaptureFixture[str]
 ) -> None:
     assert gateway_smoke.main() == 0
     out = capsys.readouterr().out
-    assert f"endpoint={ENDPOINT} model=ChatDatabricks" in out
+    assert f"endpoint={ENDPOINT} model=ChatOpenAI" in out
     assert "input_tokens=" in out and "charge=" in out
     assert out.rstrip().endswith("json_mode=accepted")
     assert stub.json_completions == 1
@@ -265,7 +265,7 @@ def test_the_volume_backend_round_trips_bytes_through_the_files_api(
         store.get("0" * 64)
 
 
-def test_a_lite_route_completes_through_chat_databricks_over_http(
+def test_a_lite_route_completes_through_chat_openai_over_http(
     stub: WorkspaceStub,
     ready: tuple[StoreConnection, UUID, UUID, BlobStore],
     route: ResolvedRoute,
@@ -279,7 +279,7 @@ def test_a_lite_route_completes_through_chat_databricks_over_http(
     stub.reply = reply
     price = priced(ESTIMATE, ENDPOINT)
     provider = completions(price, endpoint=ENDPOINT)
-    assert type(provider.chat).__name__ == "ChatDatabricks"
+    assert type(provider.chat).__name__ == "ChatOpenAI"
     bundle = Bundle(VENDORED)
     modules = ModuleProvider(conn, bundle, blobs, provider, route, run_id)
     run_route(
@@ -1015,7 +1015,7 @@ def test_an_answer_in_content_parts_prints_no_warning_quoting_it(
     """CF-077: an endpoint that answers with a list of content parts made the
     client's message dump raise Pydantic's serializer `UserWarning`, whose
     text quotes the answer -- the model's words, which quote the evidence --
-    and Python prints a warning to stderr. Through the real `ChatDatabricks`
+    and Python prints a warning to stderr. Through the real `ChatOpenAI`
     over HTTP it is contained around the call, and nothing of it is left."""
     import warnings
 

@@ -1,4 +1,4 @@
-"""A scripted chat model: the seam production fills with `ChatDatabricks`.
+"""A scripted chat model: the seam production fills with `ChatOpenAI`.
 
 The executor and billing suites used to script an HTTP transport under the
 OpenRouter client. The transport is gone (D7); what a suite scripts now is the

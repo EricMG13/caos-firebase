@@ -1,6 +1,6 @@
 """The App booted the way the platform boots it, driven through its own HTTP
 surface end to end (D28): health on minted credentials and the volume, a case,
-its pack, a LITE run through `ChatDatabricks`, the event stream, the report.
+its pack, a LITE run through `ChatOpenAI`, the event stream, the report.
 Nothing below HTTP is injected; the workspace is the loopback stub, and the
 Lakebase either kind the bundle binds (R24-14): an Autoscaling endpoint, the
 default, or a Provisioned instance."""
@@ -298,7 +298,7 @@ def test_a_redeploy_whose_worker_refused_does_not_report_the_last_one_s(
             time.sleep(0.5)
         assert first.health()["workers"] == "OK", first.log_tail()
     # Stopped by the platform's signal; its last POLLING beat stays behind.
-    monkeypatch.setenv("CAOS_REASONING_EFFORT", "high")  # the worker refuses it
+    monkeypatch.setenv("CAOS_REASONING_EFFORT", "turbo")  # outside the set (D8)
     monkeypatch.setattr(enterprise_deploy, "_headers", dict)  # health needs none
     with platform_app(stub, empty_database, tmp_path / "second.log") as second:
         health = second.health()
