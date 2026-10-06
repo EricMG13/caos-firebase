@@ -435,6 +435,29 @@ def test_the_identity_probe_asks_nothing_off_the_platform_and_the_workspace_on_i
     )
 
 
+def test_the_identity_probe_in_firebase_mode_is_ok_only_while_keys_are_held(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """D12: the probe warms Google's keys off the request path and says
+    `IDENTITY_UNAVAILABLE` while none are held, whatever the platform says."""
+    from caos.api import firebase_auth
+    from caos.api.identity import FIREBASE_ENV
+
+    held = [False]
+    warmed: list[bool] = []
+
+    def warm() -> bool:
+        warmed.append(held[0])
+        return held[0]
+
+    monkeypatch.setenv(FIREBASE_ENV, "caos-demo")
+    monkeypatch.setattr(firebase_auth, "warm", warm)
+    assert health.probe_identity() == "IDENTITY_UNAVAILABLE"
+    held[0] = True
+    assert health.probe_identity() == "OK"
+    assert warmed == [False, True]
+
+
 def test_the_identity_probe_asks_the_workspace_the_way_a_request_asks_it(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

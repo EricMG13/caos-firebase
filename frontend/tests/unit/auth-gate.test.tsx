@@ -163,51 +163,97 @@ describe("AuthGate session upkeep", () => {
     expect(writes.mock.calls[0]![0]).toContain("__session=new");
   });
 
-  it("asks the SDK for a token every five minutes and when the tab returns", async () => {
+  async function signedIn(getIdToken: ReturnType<typeof vi.fn>, expiresInMs: number) {
     vi.useFakeTimers();
-    const getIdToken = vi.fn().mockResolvedValue("tok");
+    // A whole second, so the token's UTC expiry (no milliseconds) is exact.
+    vi.setSystemTime(new Date("2026-10-06T00:00:00Z"));
     const client = { currentUser: { getIdToken } } as never;
-    render(
+    const view = render(
       <AuthGate client={client}>
         <p>workspace</p>
       </AuthGate>,
     );
     await act(async () => {
-      mocks.listeners.at(-1)!(held("tok", 3_600_000));
+      mocks.listeners.at(-1)!(held("tok", expiresInMs));
       await vi.advanceTimersByTimeAsync(0);
     });
-    expect(screen.getByText("workspace")).toBeInTheDocument();
-    expect(getIdToken).not.toHaveBeenCalled();
+    return view;
+  }
+
+  async function advance(ms: number) {
     await act(async () => {
-      await vi.advanceTimersByTimeAsync(5 * 60 * 1000);
+      await vi.advanceTimersByTimeAsync(ms);
     });
+  }
+
+  it("forces a refresh 120 s before a restored token expires", async () => {
+    const getIdToken = vi.fn().mockResolvedValue("tok");
+    await signedIn(getIdToken, 1_000_000);
+    expect(screen.getByText("workspace")).toBeInTheDocument();
+    await advance(879_999);
+    expect(getIdToken).not.toHaveBeenCalled();
+    await advance(1);
     expect(getIdToken).toHaveBeenCalledTimes(1);
-    act(() => {
-      document.dispatchEvent(new Event("visibilitychange"));
-    });
+    expect(getIdToken).toHaveBeenCalledWith(true);
+  });
+
+  it("refreshes at once when 120 s or less are left", async () => {
+    const getIdToken = vi.fn().mockResolvedValue("tok");
+    await signedIn(getIdToken, 90_000);
+    expect(getIdToken).toHaveBeenCalledTimes(1);
+    expect(getIdToken).toHaveBeenCalledWith(true);
+  });
+
+  it("retries a failed forced refresh 30 s later", async () => {
+    const getIdToken = vi.fn().mockRejectedValue(new Error("offline"));
+    await signedIn(getIdToken, 120_000);
+    expect(getIdToken).toHaveBeenCalledTimes(1);
+    await advance(29_999);
+    expect(getIdToken).toHaveBeenCalledTimes(1);
+    await advance(1);
     expect(getIdToken).toHaveBeenCalledTimes(2);
   });
 
-  it("stops refreshing once signed out", async () => {
-    vi.useFakeTimers();
+  it("asks the SDK for a token when the tab returns", async () => {
     const getIdToken = vi.fn().mockResolvedValue("tok");
-    const client = { currentUser: { getIdToken } } as never;
-    render(
-      <AuthGate client={client}>
-        <p>workspace</p>
-      </AuthGate>,
-    );
-    await act(async () => {
-      mocks.listeners.at(-1)!(held("tok", 3_600_000));
-      await vi.advanceTimersByTimeAsync(0);
+    await signedIn(getIdToken, 3_600_000);
+    act(() => {
+      document.dispatchEvent(new Event("visibilitychange"));
     });
+    expect(getIdToken).toHaveBeenCalledTimes(1);
+    expect(getIdToken).toHaveBeenCalledWith();
+  });
+
+  it("stops refreshing once signed out", async () => {
+    const getIdToken = vi.fn().mockResolvedValue("tok");
+    await signedIn(getIdToken, 1_000_000);
     await act(async () => {
       mocks.listeners.at(-1)!(null);
       await vi.advanceTimersByTimeAsync(0);
     });
+    await advance(3_600_000);
+    expect(getIdToken).not.toHaveBeenCalled();
+  });
+
+  it("stops retrying once signed out while a refresh is failing", async () => {
+    let fail: (reason: Error) => void = () => undefined;
+    const getIdToken = vi.fn(() => new Promise((_, reject) => (fail = reject)));
+    await signedIn(getIdToken, 60_000);
+    expect(getIdToken).toHaveBeenCalledTimes(1);
     await act(async () => {
-      await vi.advanceTimersByTimeAsync(10 * 60 * 1000);
+      mocks.listeners.at(-1)!(null);
+      await vi.advanceTimersByTimeAsync(0);
     });
+    await act(async () => fail(new Error("offline")));
+    await advance(3_600_000);
+    expect(getIdToken).toHaveBeenCalledTimes(1);
+  });
+
+  it("stops refreshing once unmounted", async () => {
+    const getIdToken = vi.fn().mockResolvedValue("tok");
+    const view = await signedIn(getIdToken, 1_000_000);
+    view.unmount();
+    await advance(3_600_000);
     expect(getIdToken).not.toHaveBeenCalled();
   });
 });

@@ -3,7 +3,7 @@ FROM node:24-slim AS frontend
 WORKDIR /src
 COPY frontend/package.json frontend/package-lock.json frontend/
 RUN npm --prefix frontend ci --ignore-scripts
-COPY . .
+COPY frontend/ frontend/
 ARG VITE_FIREBASE_API_KEY
 ARG VITE_FIREBASE_AUTH_DOMAIN
 ARG VITE_FIREBASE_PROJECT_ID
@@ -11,7 +11,8 @@ RUN npm --prefix frontend run build
 
 FROM python:3.13-slim AS app
 COPY --from=ghcr.io/astral-sh/uv:0.12.5 /uv /usr/local/bin/uv
-ENV UV_COMPILE_BYTECODE=1 UV_LINK_MODE=copy UV_PYTHON_DOWNLOADS=never HOME=/tmp
+ENV UV_COMPILE_BYTECODE=1 UV_LINK_MODE=copy UV_PYTHON_DOWNLOADS=never HOME=/tmp \
+    PYTHONDONTWRITEBYTECODE=1
 WORKDIR /app
 COPY pyproject.toml uv.lock .python-version ./
 RUN uv sync --locked --no-dev
