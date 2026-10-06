@@ -45,29 +45,25 @@ docker run -d --name "$NAME" -p "127.0.0.1:${PORT}:8000" \
 health=""
 for _ in $(seq 1 60); do
   health=$(curl -s "$BASE/api/health" || true)
-  if [ -n "$health" ] && echo "$health" | HEALTH="$health" python3 -c '
+  if [ -n "$health" ] && HEALTH="$health" python3 -c '
 import json, os, sys
 d = json.loads(os.environ["HEALTH"])
-codes = []
-def walk(v):
-    if isinstance(v, dict):
-        for k, x in v.items():
-            if k == "code":
-                codes.append(x)
-            walk(x)
-    elif isinstance(v, list):
-        for x in v:
-            walk(x)
-walk(d)
-sys.exit(0 if codes and all(c == "OK" for c in codes) else 1)' 2>/dev/null; then
+fields = ("store", "bundle", "blobs", "identity", "workers")
+ok = d.get("status") == "ready" and all(d.get(f) == "OK" for f in fields)
+sys.exit(0 if ok else 1)' 2>/dev/null; then
     break
   fi
   health=""
   sleep 2
 done
-[ -n "$health" ] || fail "health never answered every code OK"
+[ -n "$health" ] || fail "health never answered ready with every code OK"
 
-status=$(curl -s -o /dev/null -w '%{http_code}' "$BASE/api/cases")
+body=$(curl -s -w '\n%{http_code}' "$BASE/api/v1/book")
+status=${body##*$'\n'}
 [ "$status" = "401" ] || fail "token-less read answered $status, not 401"
+case "$body" in
+  *NOT_AUTHENTICATED*) ;;
+  *) fail "token-less read did not answer NOT_AUTHENTICATED" ;;
+esac
 
-echo "PASS: container boots, health all OK, token-less read is 401"
+echo "PASS: container boots, health ready and all OK, token-less read is 401 NOT_AUTHENTICATED"
