@@ -13,10 +13,12 @@ The build contract is `docs/specs/2026-10-04-firebase-design.md`; decisions are
 
 ## Status
 
-- **Skeleton only.** The CAOS code arrives as one fresh-history commit when the owner
-  names the fork point in `caos-databricks` (pending; do not copy code before that).
-- **Phase 1 (unplug, for the first demo):** OpenRouter model provider, Firebase identity
-  mode, Dockerfile, Cloud Run deploy. Databricks code stays in the tree, inert.
+- **Forked** from `caos-databricks` `claude/live-fixes` 861b218 (88ba489, fresh history).
+- **Phase 1 (unplug), built on branch `phase1`:** OpenRouter model provider (D8),
+  Firebase edge mode (D6, D10, D12, D14), frontend sign-in (D7, D13), Dockerfile,
+  `cloudbuild.yaml`, `scripts/container_smoke.sh`, `docs/DEPLOY.md` (D11). Databricks
+  code stays in the tree, inert. Deploy follows `docs/DEPLOY.md`; the container smoke
+  must pass before any deploy. Plan: `docs/superpowers/plans/2026-10-04-firebase-phase1.md`.
 - **Phase 2 (strip, after the demo):** delete platform identity, Lakebase, the UC volume
   backend, the bundle files and the `databricks-*` dependencies, in reviewed steps.
 
