@@ -130,13 +130,11 @@ def test_an_unreadable_commit_is_refused_not_passed(repo: Path) -> None:
 
 
 def test_the_reviewed_rollback_targets_are_refused() -> None:
-    """The two targets review 4 booted against a store HEAD had migrated:
-    the commit before 0040 refused the store, and 84eb06d, from before DL-1,
-    started on a new store in `public`."""
+    """The fork's fresh history (D1) does not carry the upstream commits that
+    review 4 booted against (b1c1c83, 84eb06d); the refusals they showed are
+    pinned on synthetic commits by the tests above (an added migration:
+    `..._cannot_be_rolled_back_by_redeploy`; the public schema:
+    `test_code_from_before_the_schema_move_is_never_a_rollback`). `main` takes
+    no repository path, so only HEAD against itself is run through it."""
     assert rollback_check.rollback_problems("HEAD", "HEAD") == []
-    [drift] = rollback_check.rollback_problems("b1c1c83^", "HEAD")
-    assert "0040_hidden_painted_over" in drift and "STORE_SCHEMA_DRIFT" in drift
-    moved = rollback_check.rollback_problems("84eb06d", "HEAD")
-    assert moved[0].startswith("84eb06d reads the public schema, not caos_store")
     assert rollback_check.main(["HEAD"]) == 0
-    assert rollback_check.main(["84eb06d"]) == 1

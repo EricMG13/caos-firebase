@@ -179,21 +179,26 @@ def test_a_pattern_weakened_with_the_suppression_it_hides_is_named(
 
 def test_the_base_rules_are_the_base_checker_s_own(tmp_path: Path) -> None:
     """The measure comes from the base revision's checker, or from its
-    `SUPPRESSIONS` alone where it predates the shared measure (84eb06d);
+    `SUPPRESSIONS` alone where it predates the shared measure (upstream 84eb06d);
     no checker there is no rule to hold to, and one that will not load is
     refused rather than skipped."""
-    measure = check_gate_config.base_measure("84eb06d")
-    assert measure is not None
-    assert measure(["x = 1  " + "#" + " noqa"])["noqa"] == 1
     root = tmp_path / "repo"
     root.mkdir()
     _git(root, "init", "-q")
     _git(root, "config", "user.email", "test@example.invalid")
     _git(root, "config", "user.name", "Ratchet test")
+    (root / "scripts").mkdir()
+    (root / "scripts" / "check_gate_config.py").write_text(
+        "import re\nSUPPRESSIONS = {'noqa': re.compile(r'#\\s*noqa\\b')}\n"
+    )
     (root / "m.py").write_text("x = 1\n", encoding="utf-8")
+    old = _commit(root, "a checker from before the shared measure")
+    measure = check_gate_config.base_measure(old, root)
+    assert measure is not None
+    assert measure(["x = 1  " + "#" + " noqa"])["noqa"] == 1
+    (root / "scripts" / "check_gate_config.py").unlink()
     bare = _commit(root, "no checker")
     assert check_gate_config.base_measure(bare, root) is None
-    (root / "scripts").mkdir()
     (root / "scripts" / "check_gate_config.py").write_text("import nowhere_at_all\n")
     broken = _commit(root, "a checker that will not load")
     assert check_gate_config.baseline_problems(broken, root) == [

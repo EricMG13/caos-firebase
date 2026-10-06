@@ -22,3 +22,4 @@ Later entries override earlier ones. Details live in the design spec named in ea
 - D7 (2026-10-04) — Dependency `firebase` (npm, modular `app` and `auth` only) for
   sign-in and token refresh. Alternative: hand-written calls to the Identity Toolkit
   and Secure Token REST APIs, which would re-implement refresh and persistence.
+- D9 (2026-10-06) — Tests that pinned upstream commits (b1c1c83, 84eb06d) are re-anchored on synthetic commits: the fork's fresh history (D1) does not carry them.
