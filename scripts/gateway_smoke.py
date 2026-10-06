@@ -1,9 +1,9 @@
 #!/usr/bin/env python3
-"""One real call through the production model path (A31): AI Gateway or Copilot.
+"""One real call through the production model path (A31): OpenRouter or Copilot.
 
 Builds the provider exactly as the worker does -- `caos.models.completions`
-with no injected chat model, so the chat model is `ChatDatabricks` on the
-configured endpoint under the SDK's unified auth -- sends one short prompt,
+with no injected chat model, so the chat model is `ChatOpenAI` on the
+configured endpoint and base URL (FD8) -- sends one short prompt,
 and prints the endpoint, the chat model class, the response id and the token
 usage. For a Copilot model the chat model is `ChatCopilot` on its real
 transport (D77), never a scripted one; both calls run under a reservation at
@@ -47,9 +47,9 @@ def main() -> int:
     provider = from_environment()
     chat = provider.chat
     kind = type(chat).__name__
-    # The production model only: `ChatDatabricks` on an endpoint, or
+    # The production model only: `ChatOpenAI` on OpenRouter (FD8), or
     # `ChatCopilot` on the SDK transport, never a scripted one.
-    production = kind == "ChatDatabricks" or (
+    production = kind == "ChatOpenAI" or (
         isinstance(chat, copilot.ChatCopilot) and chat.ask is copilot.ask_copilot
     )
     if not production:

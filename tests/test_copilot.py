@@ -4522,11 +4522,11 @@ def test_a_copilot_identity_names_its_platform_model_and_effort() -> None:
     # The Copilot name carries its own effort: a separate one is not its.
     assert models.identity_of(MODEL, "low") == "copilot/claude-opus-5.5/high/65536"
     assert (
-        models.identity_of("claude-opus-5-5") == "databricks/claude-opus-5-5/none/65536"
+        models.identity_of("claude-opus-5-5") == "openrouter/claude-opus-5-5/none/65536"
     )
     assert (
         models.identity_of("claude-opus-5-5", "high")
-        == "databricks/claude-opus-5-5/high/65536"
+        == "openrouter/claude-opus-5-5/high/65536"
     )
     assert provider(replying()).qualification_identity == (
         "copilot/claude-opus-5.5/high/65536"

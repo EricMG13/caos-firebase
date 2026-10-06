@@ -6,7 +6,7 @@ the app's source path -- read back from the stub, not from this checkout --
 are written to a scratch directory, `python -m caos.serve` starts *there*
 under the platform's environment and the deployment's own variables, every
 health code must be `OK`, and one governed LITE run must complete through
-`ChatDatabricks` over the stub (CF-001, N47). The boot from the repository
+`ChatOpenAI` over the stub (CF-001, N47). The boot from the repository
 (`tests/test_platform_boot.py`) cannot tell a file the sync left out from one
 the process never needed; this can.
 
@@ -152,7 +152,7 @@ def main() -> int:
             journey = governed_run(app, stub)
             print(
                 f"shipped: governed LITE run {journey.status}, "
-                f"{stub.completions} completions through ChatDatabricks, "
+                f"{stub.completions} completions through ChatOpenAI, "
                 f"report {journey.report.status}"
             )
             done = journey.status == "COMPLETE" and journey.report.status == 200

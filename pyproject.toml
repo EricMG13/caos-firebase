@@ -25,6 +25,8 @@ dependencies = [
   # drives the Copilot runtime on the worker's machine. Pinned exactly: the
   # runtime it provisions is pinned by the SDK release.
   "github-copilot-sdk==1.0.16",
+  # The production model provider (FD8).
+  "langchain-openai>=1.0",
 ]
 
 [dependency-groups]
@@ -45,8 +47,6 @@ dev = [
   # databricks.yml as YAML (review 4, W2 and W7); already locked through
   # langchain-core and bandit, named here because they import it (D50).
   "pyyaml==6.0.3",
-  # Test-only OpenRouter adapter (spec section 3.4); never imported outside tests/.
-  "langchain-openai>=1.0",
   # Property tests on the money arithmetic (D121); pre-approved test tool.
   "hypothesis==6.167.1",
 ]

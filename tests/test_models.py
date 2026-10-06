@@ -107,7 +107,7 @@ def test_the_request_is_bounded_and_the_identity_is_the_endpoint() -> None:
     assert provider.model == "databricks-x"
     assert (
         provider.qualification_identity
-        == f"databricks/databricks-x/none/{MAX_COMPLETION_TOKENS}"
+        == f"openrouter/databricks-x/none/{MAX_COMPLETION_TOKENS}"
     )
     assert b'"max_completion_tokens": 65536' in provider.request_bytes("q")
     assert b"json_object" in provider.request_bytes("q", json_object=True)
@@ -154,18 +154,25 @@ def test_from_environment_reads_three_names_and_never_a_value(
     monkeypatch.setenv(
         models.MODEL_PRICE_ENV, "databricks-z,0.000001,0.000004,2026-09-22"
     )
-    monkeypatch.setenv(models.REASONING_EFFORT_ENV, "high")
+    monkeypatch.setenv(models.REASONING_EFFORT_ENV, "High")
     with pytest.raises(Refusal, match=r"^PROVIDER_NOT_CONFIGURED$"):
-        # AR-15: an effort the endpoint never receives names no profile.
+        # FD8: an effort outside the set names no profile and is never sent.
         from_environment()
+    monkeypatch.setenv(models.REASONING_EFFORT_ENV, "high")
+    # FD8: the effort sent is the effort the identity names (AR-15).
+    assert (
+        from_environment().qualification_identity
+        == "openrouter/databricks-z/high/65536"
+    )
     monkeypatch.delenv(models.REASONING_EFFORT_ENV)
+    built.clear()
     provider = from_environment()
     assert built == ["databricks-z"]
-    assert provider.qualification_identity == "databricks/databricks-z/none/65536"
+    assert provider.qualification_identity == "openrouter/databricks-z/none/65536"
     # The same profile from the names alone, so a caller can refuse an
     # unexpected one before any client is built (`scripts/qualify.py`).
     assert models.identity_of("databricks-z") == provider.qualification_identity
-    assert models.identity_of("m", "high") == "databricks/m/high/65536"
+    assert models.identity_of("m", "high") == "openrouter/m/high/65536"
     assert (
         price_from_environment(
             "databricks-z", "databricks-z,0.000001,0.000004,2026-09-22"
@@ -174,35 +181,167 @@ def test_from_environment_reads_three_names_and_never_a_value(
     )
 
 
-def test_the_production_model_is_chat_databricks_on_the_endpoint(
+def test_the_chat_model_is_openrouter_with_the_deadline_and_no_retry(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    import databricks_langchain
+    monkeypatch.setenv("OPENROUTER_API_KEY", "sk-or-test")
+    monkeypatch.setenv("CAOS_MODEL_ENDPOINT", "openai/gpt-6-luna")
+    monkeypatch.delenv("CAOS_REASONING_EFFORT", raising=False)
+    monkeypatch.delenv("CAOS_PROVIDER_ORDER", raising=False)
+    monkeypatch.delenv("CAOS_MODEL_BASE_URL", raising=False)
+    from langchain_openai import ChatOpenAI
 
-    seen: dict[str, object] = {}
+    from caos.provider import TIMEOUT_SECONDS
 
-    class _ChatDatabricks(ScriptedChat):
-        def __init__(self, **given: object) -> None:
-            seen.update(given)
-            super().__init__(answer=answer())
+    assert TIMEOUT_SECONDS == 720.0, "a generation budget inside the lease (D117)"
+    chat = chat_model()
+    assert isinstance(chat, ChatOpenAI)
+    assert chat.openai_api_base == "https://openrouter.ai/api/v1"
+    assert chat.model_name == "openai/gpt-6-luna"
+    assert chat.max_retries == 0
+    assert chat.request_timeout == TIMEOUT_SECONDS
+    assert chat.max_tokens == MAX_COMPLETION_TOKENS
+    assert chat.extra_body is None
+    other = chat_model(endpoint="other")
+    assert isinstance(other, ChatOpenAI)
+    assert other.model_name == "other"
 
-    monkeypatch.setattr(databricks_langchain, "ChatDatabricks", _ChatDatabricks)
-    client = object()
-    monkeypatch.setattr("caos.workspace.workspace_client", lambda: client)
-    monkeypatch.setenv(models.ENDPOINT_ENV, "databricks-claude-opus-5")
-    model = chat_model()
-    assert isinstance(model, _ChatDatabricks)
-    assert seen == {
-        "endpoint": "databricks-claude-opus-5",
-        "max_tokens": 65536,
-        "timeout": 720.0,
-        "max_retries": 0,
-        # The process's bounded client (CR-6), not the library's default one
-        # with the SDK's five-minute discovery budget.
-        "workspace_client": client,
+
+def test_the_chat_model_sends_the_effort_and_the_provider_pin(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("OPENROUTER_API_KEY", "sk-or-test")
+    monkeypatch.setenv("CAOS_REASONING_EFFORT", "high")
+    monkeypatch.setenv("CAOS_PROVIDER_ORDER", "openai")
+    from langchain_openai import ChatOpenAI
+
+    chat = chat_model(endpoint="openai/gpt-6-luna")
+    assert isinstance(chat, ChatOpenAI)
+    assert chat.extra_body == {
+        "reasoning": {"effort": "high"},
+        "provider": {"order": ["openai"], "allow_fallbacks": False},
     }
-    assert isinstance(chat_model(endpoint="other"), _ChatDatabricks)
-    assert seen["endpoint"] == "other"
+
+
+def test_no_key_is_provider_not_configured(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.delenv("OPENROUTER_API_KEY", raising=False)
+    with pytest.raises(Refusal) as refused:
+        chat_model(endpoint="openai/gpt-6-luna")
+    assert refused.value.code is RefusalCode.PROVIDER_NOT_CONFIGURED
+
+
+def test_an_effort_outside_the_set_is_provider_not_configured(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("CAOS_REASONING_EFFORT", "High")
+    from caos.pricing import EFFORTS, reasoning_effort
+
+    with pytest.raises(Refusal) as refused:
+        reasoning_effort()
+    assert refused.value.code is RefusalCode.PROVIDER_NOT_CONFIGURED
+    monkeypatch.setenv("CAOS_REASONING_EFFORT", " ")
+    assert reasoning_effort() is None
+    for effort in EFFORTS:
+        monkeypatch.setenv("CAOS_REASONING_EFFORT", effort)
+        assert reasoning_effort() == effort
+
+
+def test_the_identity_names_openrouter_and_the_effort_sent(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("CAOS_REASONING_EFFORT", "high")
+    assert models.identity_of("openai/gpt-6-luna", "high").startswith(
+        "openrouter/openai/gpt-6-luna/high/"
+    )
+
+
+@pytest.mark.parametrize(
+    "url",
+    [
+        "https://gateway.example/v1",
+        "http://127.0.0.1:8080/serving-endpoints",
+        "http://localhost:9/v1",
+        "http://[::1]:9/v1",
+    ],
+)
+def test_the_base_url_is_https_or_loopback_http(
+    monkeypatch: pytest.MonkeyPatch, url: str
+) -> None:
+    from langchain_openai import ChatOpenAI
+
+    monkeypatch.setenv("OPENROUTER_API_KEY", "sk-or-test")
+    monkeypatch.setenv(models.MODEL_BASE_URL_ENV, url)
+    assert models.model_base_url() == url
+    chat = chat_model(endpoint="m")
+    assert isinstance(chat, ChatOpenAI)
+    assert chat.openai_api_base == url
+
+
+@pytest.mark.parametrize(
+    "url",
+    [
+        "http://gateway.example/v1",
+        "http://127.0.0.2/v1",
+        "ftp://127.0.0.1/v1",
+        "https://user:pass@gateway.example/v1",
+        "https://gateway.example:99999/v1",
+        "https:///v1",
+        "not a url",
+    ],
+)
+def test_any_other_base_url_is_provider_not_configured(
+    monkeypatch: pytest.MonkeyPatch, url: str
+) -> None:
+    monkeypatch.setenv("OPENROUTER_API_KEY", "sk-or-test")
+    monkeypatch.setenv(models.MODEL_BASE_URL_ENV, url)
+    with pytest.raises(Refusal, match=r"^PROVIDER_NOT_CONFIGURED$"):
+        chat_model(endpoint="m")
+    monkeypatch.delenv(models.MODEL_BASE_URL_ENV)
+    assert models.model_base_url() == models.OPENROUTER_BASE_URL
+
+
+def test_the_identity_names_the_provider_pin_it_sends(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """FD8: a pin travels in the body and is named `model@order`, as the test
+    adapter names it, so a verdict binds the host the call could land on."""
+    monkeypatch.setenv("CAOS_PROVIDER_ORDER", " openai , azure ,")
+    assert models.provider_order() == ("openai", "azure")
+    monkeypatch.setenv(models.ENDPOINT_ENV, "openai/gpt-6-luna")
+    monkeypatch.setenv(
+        models.MODEL_PRICE_ENV, "openai/gpt-6-luna,0.000001,0.000004,2026-09-22"
+    )
+    monkeypatch.setenv(models.REASONING_EFFORT_ENV, "high")
+    monkeypatch.setattr(models, "chat_model", lambda **_: ScriptedChat(answer=answer()))
+    assert from_environment().qualification_identity == (
+        f"openrouter/openai/gpt-6-luna@openai,azure/high/{MAX_COMPLETION_TOKENS}"
+    )
+    monkeypatch.delenv("CAOS_PROVIDER_ORDER")
+    assert models.provider_order() == ()
+    assert models.identity_of("m", None, ()) == "openrouter/m/none/65536"
+
+
+def test_a_worker_run_names_the_effort_and_pin_it_sends(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """R3: the worker's provider, built per run, names what its client sends."""
+    from langchain_openai import ChatOpenAI
+
+    from caos.graph.worker import approved
+
+    monkeypatch.setenv("OPENROUTER_API_KEY", "sk-or-test")
+    monkeypatch.setenv(models.REASONING_EFFORT_ENV, "high")
+    monkeypatch.setenv("CAOS_PROVIDER_ORDER", "openai")
+    provider = approved({PRICE.model: PRICE})(PRICE)
+    assert isinstance(provider, ChatCompletions)
+    assert provider.qualification_identity == (
+        f"openrouter/{PRICE.model}@openai/high/{MAX_COMPLETION_TOKENS}"
+    )
+    assert isinstance(provider.chat, ChatOpenAI)
+    assert provider.chat.extra_body == {
+        "reasoning": {"effort": "high"},
+        "provider": {"order": ["openai"], "allow_fallbacks": False},
+    }
 
 
 def test_reported_charge_is_exact_known_money_or_unknown() -> None:
@@ -262,31 +401,6 @@ def test_a_langchain_run_id_is_never_recorded_as_the_provider_s() -> None:
         fake_completions(ScriptedChat(answer=surfaced)).complete(PROMPT).generation_id
         == "chatcmpl-77"
     )
-
-
-def test_the_chat_model_carries_the_socket_deadline_and_never_retries(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    """F40: the lease is sized against `TIMEOUT_SECONDS` (brief D5), so the
-    transport must actually carry it, and a retry is the caller's reservation."""
-    from databricks.sdk import WorkspaceClient
-    from databricks.sdk.config import Config
-    from databricks_langchain import ChatDatabricks
-
-    from caos.models import chat_model
-    from caos.provider import TIMEOUT_SECONDS
-
-    assert TIMEOUT_SECONDS == 720.0, "a generation budget inside the lease (D117)"
-    # databricks-sdk 0.140 probes `/.well-known/databricks-config` in
-    # `Config.__init__` and retries for its default budget (about 300 s) against
-    # a host nobody serves; this test is about the chat model, not discovery.
-    monkeypatch.setattr(Config, "_resolve_host_metadata", lambda _self: None)
-    client = WorkspaceClient(config=Config(host="http://127.0.0.1:9", token="t"))
-    monkeypatch.setattr("caos.workspace.workspace_client", lambda: client)
-    chat = chat_model(endpoint="databricks-x")
-    assert isinstance(chat, ChatDatabricks)
-    assert chat.timeout == TIMEOUT_SECONDS
-    assert chat.max_retries == 0
 
 
 def test_a_rate_limit_is_asked_again_under_the_same_reservation(

@@ -23,7 +23,7 @@ directory the run's blobs are kept in, for the same reason: the proof re-reads
 them, and `$TMPDIR` is purged (FP-16).
 
     scripts/qualify.py qualification/ccl-fy2025-market-dislocation \
-        --expect-identity databricks/claude-opus-5-5/none/65536 --ceiling 60.00
+        --expect-identity openrouter/claude-opus-5-5/none/65536 --ceiling 60.00
 
     # The same set through GitHub Copilot on this machine (D77): the identity
     # names the platform, the model, the effort and the output cap.

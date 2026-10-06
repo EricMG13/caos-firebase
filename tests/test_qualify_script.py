@@ -195,7 +195,7 @@ def test_main_refuses_to_keep_a_paid_run_where_it_cannot_last(
         [
             str(Path(__file__).resolve().parents[1] / "qualification/vmo2-fy2025"),
             "--expect-identity",
-            "databricks/openai/gpt-5.6-terra/none/65536",
+            "openrouter/openai/gpt-5.6-terra/none/65536",
             "--ceiling",
             "22.00",
         ]
@@ -682,7 +682,7 @@ def test_each_docstring_example_expects_the_identity_its_endpoint_resolves_to() 
     expected = re.findall(r"--expect-identity (\S+)", doc)
     assert endpoints == ["copilot:gpt-6-luna@high"]
     assert expected == [
-        "databricks/claude-opus-5-5/none/65536",
+        "openrouter/claude-opus-5-5/none/65536",
         "copilot/gpt-6-luna/high/65536",
     ]
     assert identity_of("claude-opus-5-5") == expected[0]

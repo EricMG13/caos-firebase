@@ -107,10 +107,14 @@ def test_a_list_that_cannot_be_read_whole_refuses_every_model(
     assert refused.value.code is RefusalCode.PROVIDER_NOT_CONFIGURED
 
 
-def test_a_reasoning_effort_is_refused_before_any_price_is_read(
+def test_a_reasoning_effort_outside_the_set_refuses_every_model(
     deployed: None, monkeypatch: pytest.MonkeyPatch
 ) -> None:
+    """FD8: the effort is sent, so a valid one is configuration and a
+    malformed one refuses before any price is read."""
     monkeypatch.setenv(REASONING_EFFORT_ENV, "high")
+    assert model_choices()
+    monkeypatch.setenv(REASONING_EFFORT_ENV, "turbo")
     with pytest.raises(Refusal) as refused:
         model_choices()
     assert refused.value.code is RefusalCode.PROVIDER_NOT_CONFIGURED

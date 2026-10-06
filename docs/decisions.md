@@ -22,3 +22,11 @@ Later entries override earlier ones. Details live in the design spec named in ea
 - D7 (2026-10-04) — Dependency `firebase` (npm, modular `app` and `auth` only) for
   sign-in and token refresh. Alternative: hand-written calls to the Identity Toolkit
   and Secure Token REST APIs, which would re-implement refresh and persistence.
+- D8 (2026-10-04) — `langchain-openai` (already locked) moves from the test group to the
+  runtime: `caos.models.chat_model` is `ChatOpenAI` on OpenRouter. `CAOS_REASONING_EFFORT`
+  is now sent (`reasoning.effort`) and named in the identity, so the N2 refusal becomes a
+  validation; `CAOS_PROVIDER_ORDER` pins the provider without fallbacks and is named in the
+  identity as `model@order` (`openrouter/<model>@<order>/<effort>/<max tokens>`, the test
+  adapter's form). `CAOS_MODEL_BASE_URL` overrides the base URL: https, or http to a
+  loopback host only (the workspace stub answers there); anything else is refused. The
+  OpenRouter-free gate (A28) exempts `caos/models.py` alone, the one production seam.
