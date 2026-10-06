@@ -84,8 +84,9 @@ without `CAOS_PUBLIC_ORIGIN` and `CAOS_ROLE_MAP`.
   logged but the code.
 - **Actor.** `user_id = uuid5(<fixed namespace>, "firebase:" + sub)`. Global role from
   `CAOS_ROLE_MAP` (`email=ROLE;email=ROLE`, compared lower-case); an email not in the
-  map is `403 NOT_AUTHORISED`. Every inbound `x-caos-*`, `x-forwarded-*` and
-  `forwarded` header is dropped before identity, as platform mode does.
+  map is `403 NOT_AUTHORISED`. The identity headers (`x-caos-user`, `x-caos-role`,
+  `x-forwarded-groups`) are dropped before identity, as platform mode does; this mode
+  reads only `authorization` and `cookie`, so no other forwarded header decides anyone.
 - **Sign-in method: email and password**, not Google sign-in. The app's policy sets
   `require-trusted-types-for 'script'; trusted-types 'none'` and
   `cross-origin-opener-policy: same-origin`; Google's popup and redirect flows load
@@ -98,7 +99,7 @@ without `CAOS_PUBLIC_ORIGIN` and `CAOS_ROLE_MAP`.
   `initializeAuth(app, {persistence: indexedDBLocalPersistence})` and no popup
   resolver, so no third-party script or frame loads. A sign-in screen gates the
   workspace; `onIdTokenChanged` refreshes the bearer token and the `__session` cookie
-  (`Secure; SameSite=Strict; Path=/api; Max-Age=3600`). The sidebar's Sign out
+  (`Secure; SameSite=Strict; Path=/; Max-Age=3600`). The sidebar's Sign out
   becomes live (sign out, clear the cookie).
 - **Accepted limits.** No revocation check (ID tokens live one hour); one cookie name
   kept for Hosting compatibility later.
