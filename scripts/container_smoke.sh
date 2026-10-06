@@ -33,6 +33,7 @@ docker build -t "$IMAGE" . >/dev/null || { echo "FAIL: docker build"; exit 1; }
 docker run -d --name "$NAME" -p "127.0.0.1:${PORT}:8000" \
   --add-host host.docker.internal:host-gateway \
   -e "CAOS_DATABASE_URL=postgresql://postgres:local-test-admin-only@host.docker.internal:55437/$DB" \
+  --tmpfs /tmp/blobs:rw,uid=10001,gid=10001,mode=0700 \
   -e CAOS_BLOB_ROOT=/tmp/blobs \
   -e OPENROUTER_API_KEY=sk-or-test \
   -e CAOS_MODEL_ENDPOINT=openai/gpt-6-luna \

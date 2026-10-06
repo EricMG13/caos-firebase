@@ -60,10 +60,13 @@ _MAX_AGE = re.compile(r"max-age=(\d+)", re.IGNORECASE)
 
 
 def role_map(value: str) -> dict[str, GlobalRole]:
-    """`email=ROLE;email=ROLE`, emails lower-cased; `EDGE_CONFIG_INVALID` for an
-    empty map, an entry without `=` or `@`, an unknown role, or an email twice."""
+    """`email=ROLE;email=ROLE`, emails lower-cased, empty entries skipped (D14);
+    `EDGE_CONFIG_INVALID` for an empty map, an entry without `=` or `@`, an
+    unknown role, or an email twice."""
     roles: dict[str, GlobalRole] = {}
     for entry in value.split(";"):
+        if not entry.strip():
+            continue
         email, sep, role = entry.strip().partition("=")
         email = email.strip().lower()
         if not sep or "@" not in email or email in roles:
@@ -72,6 +75,8 @@ def role_map(value: str) -> dict[str, GlobalRole]:
             roles[email] = GlobalRole(role.strip().upper())
         except ValueError:
             raise Refusal(RefusalCode.EDGE_CONFIG_INVALID) from None
+    if not roles:
+        raise Refusal(RefusalCode.EDGE_CONFIG_INVALID)
     return roles
 
 
@@ -190,6 +195,27 @@ class GoogleKeys:
             if self._fetching or now - self._attempted < REFETCH_FLOOR_SECONDS:
                 return self._cached(kid, now)
             self._fetching, self._attempted = True, now
+        self._refresh()
+        with self._lock:
+            return self._cached(kid, self._clock())
+
+    def warm(self) -> bool:
+        """Fetch when no fresh keys are held, under the same single flight and
+        floor as `key`; whether usable keys are held afterwards. Never waits for
+        another caller's fetch."""
+        with self._lock:
+            now = self._clock()
+            if self._keys and now < self._until:
+                return True
+            if self._fetching or now - self._attempted < REFETCH_FLOOR_SECONDS:
+                return self._usable(now)
+            self._fetching, self._attempted = True, now
+        self._refresh()
+        with self._lock:
+            return self._usable(self._clock())
+
+    def _refresh(self) -> None:
+        """Run the fetch the caller claimed; store the keys it brought, if any."""
         keys: dict[str, RSAPublicKey] | None = None
         max_age = 0.0
         try:
@@ -202,8 +228,10 @@ class GoogleKeys:
                     self._until = self._clock() + min(
                         max(max_age, MIN_CACHE_SECONDS), MAX_CACHE_SECONDS
                     )
-        with self._lock:
-            return self._cached(kid, self._clock())
+
+    def _usable(self, now: float) -> bool:
+        """Keys are held and within their grace (`_cached`'s own test)."""
+        return bool(self._keys) and now < self._until + STALE_GRACE_SECONDS
 
     def _fetched(self) -> tuple[dict[str, RSAPublicKey] | None, float]:
         """The fetched keys and their max-age, or None for any failure."""
@@ -223,7 +251,7 @@ class GoogleKeys:
     def _cached(self, kid: str, now: float) -> RSAPublicKey:
         """`kid` from the cache while it is within its grace; `NOT_AUTHENTICATED`
         for a kid those keys lack; `IDENTITY_UNAVAILABLE` when there are none."""
-        if not self._keys or now >= self._until + STALE_GRACE_SECONDS:
+        if not self._usable(now):
             raise Refusal(RefusalCode.IDENTITY_UNAVAILABLE)
         if kid not in self._keys:
             raise Refusal(RefusalCode.NOT_AUTHENTICATED)
@@ -231,6 +259,12 @@ class GoogleKeys:
 
 
 _KEYS = GoogleKeys()
+
+
+def warm() -> bool:
+    """Fill the process's key cache off the request path (D12); whether usable
+    keys are held. The identity health probe calls this every round."""
+    return _KEYS.warm()
 
 
 def verify(

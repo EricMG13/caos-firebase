@@ -6,8 +6,11 @@ import { auth, writeSessionCookie } from "./firebase";
 
 type Gate = "checking" | "signed-out" | "signed-in";
 
-/** The SDK refreshes a token only when it is asked for one inside its last five minutes. */
-const REFRESH_MS = 5 * 60 * 1000;
+/** Seconds before expiry the token is force-refreshed (D13): the SDK refreshes on
+    demand only inside its last 30 s, and a listener starts no refresh of its own. */
+const REFRESH_LEAD_S = 120;
+/** A failed forced refresh is tried again after this long. */
+const RETRY_MS = 30_000;
 
 /** Children when no project is configured or a token is held; else the sign-in form. */
 export function AuthGate({
@@ -21,7 +24,19 @@ export function AuthGate({
   useEffect(() => {
     if (!client) return undefined;
     let latest = 0;
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    const disarm = () => clearTimeout(timer);
+    // A forced refresh fires the listener, which rewrites the cookie and re-arms.
+    const arm = (ms: number, mine: number) => {
+      disarm();
+      timer = setTimeout(() => {
+        client.currentUser?.getIdToken(true).catch(() => {
+          if (mine === latest) arm(RETRY_MS, mine);
+        });
+      }, ms);
+    };
     const unsubscribe = onIdTokenChanged(client, (user) => {
+      disarm();
       const mine = ++latest;
       const read = user
         ? user.getIdTokenResult().then((result) => ({
@@ -38,10 +53,12 @@ export function AuthGate({
           if (mine !== latest) return;
           writeSessionCookie(held ? held.token : null, held?.maxAge);
           setGate(held ? "signed-in" : "signed-out");
+          if (held) arm(Math.max(0, held.maxAge - REFRESH_LEAD_S) * 1000, mine);
         });
     });
     return () => {
       latest += 1;
+      disarm();
       unsubscribe();
     };
   }, [client]);
@@ -51,10 +68,8 @@ export function AuthGate({
     const onVisible = () => {
       if (document.visibilityState === "visible") refresh();
     };
-    const timer = setInterval(refresh, REFRESH_MS);
     document.addEventListener("visibilitychange", onVisible);
     return () => {
-      clearInterval(timer);
       document.removeEventListener("visibilitychange", onVisible);
     };
   }, [client, gate]);

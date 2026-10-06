@@ -149,13 +149,87 @@ def test_keys_that_cannot_be_fetched_or_read_are_identity_unavailable() -> None:
         assert refused.value.code is RefusalCode.IDENTITY_UNAVAILABLE
 
 
+def test_warm_fetches_once_into_an_empty_cache_and_answers_whether_keys_are_held() -> (
+    None
+):
+    calls: list[float] = []
+    now = [1000.0]
+
+    def fetch() -> tuple[dict[str, str], float]:
+        calls.append(now[0])
+        return {"k1": _cert_pem()}, 3600.0
+
+    keys = fa.GoogleKeys(fetch=fetch, clock=lambda: now[0])
+    assert keys.warm() is True
+    assert keys.warm() is True
+    keys.key("k1")
+    assert len(calls) == 1
+
+
+def test_warm_respects_the_refetch_floor_after_a_failure() -> None:
+    calls: list[float] = []
+    now = [1000.0]
+    failing = [True]
+
+    def fetch() -> tuple[dict[str, str], float]:
+        calls.append(now[0])
+        if failing[0]:
+            raise OSError
+        return {"k1": _cert_pem()}, 3600.0
+
+    keys = fa.GoogleKeys(fetch=fetch, clock=lambda: now[0])
+    assert keys.warm() is False
+    failing[0] = False
+    now[0] += fa.REFETCH_FLOOR_SECONDS - 1
+    assert keys.warm() is False
+    assert len(calls) == 1
+    now[0] += 1
+    assert keys.warm() is True
+    assert len(calls) == 2
+    # Past max-age with a failing refresh, held keys still serve their grace.
+    failing[0] = True
+    now[0] += 3600.0
+    assert keys.warm() is True
+    now[0] += fa.STALE_GRACE_SECONDS
+    assert keys.warm() is False
+
+
+def test_warm_never_waits_for_a_fetch_already_running() -> None:
+    entered, release = threading.Event(), threading.Event()
+
+    def slow() -> tuple[dict[str, str], float]:
+        entered.set()
+        release.wait(5)
+        return {"k1": _cert_pem()}, 3600.0
+
+    keys = fa.GoogleKeys(fetch=slow)
+    first = threading.Thread(target=keys.warm)
+    first.start()
+    assert entered.wait(5)
+    assert keys.warm() is False
+    release.set()
+    first.join(5)
+    assert keys.warm() is True
+
+
+def test_the_module_warm_uses_the_process_cache(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    held = fa.GoogleKeys(fetch=lambda: ({"k1": _cert_pem()}, 3600.0))
+    monkeypatch.setattr(fa, "_KEYS", held)
+    assert fa.warm() is True
+
+
 def test_the_role_map_reads_lower_cased_emails_and_refuses_a_malformed_one() -> None:
     assert fa.role_map("Analyst@Example.com=analyst; v@x.io=READER") == {
         "analyst@example.com": GlobalRole.ANALYST,
         "v@x.io": GlobalRole.READER,
     }
+    assert fa.role_map(";a@b.c=READER;;") == {"a@b.c": GlobalRole.READER}
     for bad in (
         "",
+        ";",
+        " ; ;; ",
         "noemail=READER",
         "a@b.c",
         "a@b.c=OWNER",

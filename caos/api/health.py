@@ -33,9 +33,10 @@ from fastapi import APIRouter, Request
 from fastapi.responses import JSONResponse
 from pydantic import AwareDatetime, BaseModel, ConfigDict
 
+from caos.api import firebase_auth
 from caos.api.deps import BLOB_ROOT, VENDORED_BUNDLE, _vendored_bundle
 from caos.api.edge import PLATFORM_ENV
-from caos.api.identity import scim_me
+from caos.api.identity import FIREBASE_ENV, scim_me
 from caos.blobs import VOLUME_SCHEME, BlobStore
 from caos.methodology.bundle import Bundle, verify_every_file
 from caos.refusals import Refusal
@@ -297,7 +298,13 @@ def probe_identity() -> HealthCode:
     workspace refused made every request 401 or 503 while health still
     reported `ready`, because the SDK resolved its own host and asked its own
     way. The SDK is still what holds the credential -- nothing here reads one.
+
+    In firebase mode, Google's signing keys: the probe fills the cache off the
+    request path, so the first signed-in page after a start is not refused
+    (D12), and reports `IDENTITY_UNAVAILABLE` while no usable keys are held.
     """
+    if FIREBASE_ENV in os.environ:
+        return "OK" if firebase_auth.warm() else "IDENTITY_UNAVAILABLE"
     if not os.environ.get(PLATFORM_ENV):
         return "OK"
     from caos.workspace import workspace_client

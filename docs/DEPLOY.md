@@ -54,8 +54,8 @@ gcloud storage buckets add-iam-policy-binding gs://$PROJECT-caos-blobs \
 
 ## 5. Build
 
-The web `apiKey` comes from `firebase apps:create web caos` then
-`firebase apps:sdkconfig web`.
+The web `apiKey` comes from `firebase apps:create web caos --project "$PROJECT"` then
+`firebase apps:sdkconfig web --project "$PROJECT"`.
 
 ```bash
 IMAGE=$REGION-docker.pkg.dev/$PROJECT/caos/caos:$(git rev-parse --short HEAD)
@@ -71,9 +71,12 @@ Set `CAOS_PUBLIC_ORIGIN` on this first deploy from the deterministic service URL
 `https://caos-<project-number>.<region>.run.app`. Firebase mode refuses to boot
 without it, so there is no placeholder second deploy. Requests through the legacy
 `*.a.run.app` URL get 403 ORIGIN_REFUSED on writes; always use the URL below.
-`CAOS_ROLE_MAP` is `email=ROLE;email=ROLE` and must not end with `;`. The `^@^` prefix
+`CAOS_ROLE_MAP` is `email=ROLE;email=ROLE`; an empty entry (a trailing `;`) is
+skipped, anything else malformed refuses the boot. The `^@^` prefix
 makes `@` the env separator so the role map's `;` survives. `--allow-unauthenticated`
-lets the browser reach the service; sign-in is the app's own.
+lets the browser reach the service; sign-in is the app's own. `CAOS_RUN_CEILING=120.00`
+is set explicitly, as at the fork point (D11): it bounds each run's reservation, and the
+OpenRouter key's own limit is the hard spend stop.
 
 ```bash
 NUM=$(gcloud projects describe $PROJECT --format='value(projectNumber)')
@@ -85,10 +88,30 @@ gcloud run deploy caos --image $IMAGE --region $REGION --port 8000 --no-cpu-thro
   --add-volume name=blobs,type=cloud-storage,bucket=$PROJECT-caos-blobs \
   --add-volume-mount volume=blobs,mount-path=/data/blobs \
   --set-secrets OPENROUTER_API_KEY=openrouter-key:latest,CAOS_DATABASE_URL=caos-database-url:latest \
-  --set-env-vars "^@^CAOS_BLOB_ROOT=/data/blobs@CAOS_FIREBASE_PROJECT=$PROJECT@CAOS_ROLE_MAP=<owner email>=ANALYST;<viewer email>=READER@CAOS_MODEL_ENDPOINT=openai/gpt-6-luna@CAOS_MODEL_PRICE=openai/gpt-6-luna,0.0000002,0.000001,2026-10-04@CAOS_REASONING_EFFORT=high@CAOS_PROVIDER_ORDER=openai@CAOS_PUBLIC_ORIGIN=$ORIGIN"
+  --set-env-vars "^@^CAOS_BLOB_ROOT=/data/blobs@CAOS_FIREBASE_PROJECT=$PROJECT@CAOS_ROLE_MAP=<owner email>=ANALYST;<viewer email>=READER@CAOS_MODEL_ENDPOINT=openai/gpt-6-luna@CAOS_MODEL_PRICE=openai/gpt-6-luna,0.0000002,0.000001,2026-10-04@CAOS_REASONING_EFFORT=high@CAOS_PROVIDER_ORDER=openai@CAOS_RUN_CEILING=120.00@CAOS_PUBLIC_ORIGIN=$ORIGIN"
 URL=$(gcloud run services describe caos --region $REGION --format='value(status.url)')
-echo "$URL"   # compare with $ORIGIN; if they differ, stop and report (never set the legacy *.a.run.app URL)
+echo "$URL"; echo "$ORIGIN"
 ```
+
+Both URLs serve. Use `$ORIGIN` in the browser: writes through the legacy
+`*.a.run.app` URL get 403 ORIGIN_REFUSED, and `CAOS_PUBLIC_ORIGIN` stays `$ORIGIN`.
+
+Then add the service host (`$ORIGIN` without `https://`, i.e.
+`caos-$NUM.$REGION.run.app`) under Firebase console, Authentication, Settings,
+Authorised domains, or sign-in from the service is refused.
+
+If `/api/health` reports `blobs=BLOB_ROOT_UNAVAILABLE`, the Cloud Storage mount is not
+writable by the image's user (uid 10001). Rerun the deploy above with the volume line
+replaced by:
+
+```bash
+  --add-volume name=blobs,type=cloud-storage,bucket=$PROJECT-caos-blobs,mount-options="uid=10001;gid=10001" \
+```
+
+If health is OK but uploads fail on the mount with `STORE_UNAVAILABLE` or
+`INTERNAL_FAULT`, the suspect is the directory fsync after each blob's rename
+(`_sync_directory` in `caos/blobs.py`) on Cloud Storage FUSE; report it rather than
+patching it in place.
 
 The model price is the owner's 2026-10-03 figure; change it only on the owner's word.
 
