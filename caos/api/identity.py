@@ -169,8 +169,10 @@ async def actor_from_headers(headers: object) -> Actor:
     get = getattr(headers, "get", None)
     if get is None:
         raise Refusal(RefusalCode.NOT_AUTHENTICATED)
-    if os.environ.get(FIREBASE_ENV):
-        # Imported here: `firebase_auth` imports this module's `Actor`.
+    if FIREBASE_ENV in os.environ:
+        # Present, not truthy (F4): an empty project is refused at boot, never
+        # read as "not firebase mode". Imported here: `firebase_auth` imports
+        # this module's `Actor`.
         from caos.api.firebase_auth import actor_from_firebase
 
         return await actor_from_firebase(get("authorization"), get("cookie"))
@@ -589,15 +591,18 @@ class _Exchange:
             connection.close()
 
 
-def _body_by(response: http.client.HTTPResponse, deadline: float) -> bytes:
-    """At most one byte past `SCIM_BODY_BYTES` of the body, read one receive at
-    a time and given up at `deadline`: a body trickling a byte inside every
-    socket timeout otherwise never ends (ED-8)."""
+def _body_by(
+    response: http.client.HTTPResponse, deadline: float, limit: int = SCIM_BODY_BYTES
+) -> bytes:
+    """At most one byte past `limit` of the body, read one receive at a time
+    and given up at `deadline`: a body trickling a byte inside every socket
+    timeout otherwise never ends (ED-8). Google's certificates are read the
+    same way (`caos/api/firebase_auth.py`)."""
     body = bytearray()
-    while len(body) <= SCIM_BODY_BYTES:
+    while len(body) <= limit:
         if time.monotonic() >= deadline:
             raise TimeoutError
-        received = response.read1(SCIM_BODY_BYTES + 1 - len(body))
+        received = response.read1(limit + 1 - len(body))
         if not received:
             break
         body += received

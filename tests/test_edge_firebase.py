@@ -63,6 +63,8 @@ def test_the_firebase_project_selects_firebase_mode() -> None:
         {"CAOS_PUBLIC_ORIGIN": "https://caos.example.run.app/"},
         {"CAOS_ROLE_MAP": ""},
         {"CAOS_ROLE_MAP": None},
+        {"CAOS_FIREBASE_PROJECT": ""},
+        {"CAOS_FIREBASE_PROJECT": "  "},
     ],
 )
 def test_firebase_mode_refuses_a_configuration_it_cannot_serve(
@@ -145,3 +147,36 @@ def test_the_policy_admits_firebase_auth_only_in_firebase_mode(
         ),
     ):
         assert response.headers["content-security-policy"] == FIREBASE_CSP
+
+
+@pytest.mark.usefixtures("firebase")
+def test_two_cookie_headers_are_not_authenticated() -> None:
+    recorder, client = _far()
+    refused = client.get(
+        "/x", headers=[("cookie", "__session=a"), ("cookie", "__session=b")]
+    )
+    assert refused.status_code == 401
+    assert refused.json()["code"] == "NOT_AUTHENTICATED"
+    assert recorder.seen == []
+
+
+@pytest.mark.usefixtures("firebase")
+def test_a_cookie_authenticated_unsafe_request_is_served_only_same_origin() -> None:
+    recorder, client = _far()
+    cookie = ("cookie", "__session=token")
+    refused = client.post(
+        "/api/v1/x",
+        headers=[
+            cookie,
+            ("origin", "https://evil.example"),
+            ("sec-fetch-site", "cross-site"),
+        ],
+    )
+    assert refused.status_code == 403
+    assert refused.json()["code"] == "ORIGIN_REFUSED"
+    served = client.post(
+        "/api/v1/x",
+        headers=[cookie, ("origin", PUBLIC), ("sec-fetch-site", "same-origin")],
+    )
+    assert served.status_code == 200
+    assert len(recorder.seen) == 1

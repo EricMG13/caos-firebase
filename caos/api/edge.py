@@ -224,7 +224,7 @@ def resolve_mode(environ: Mapping[str, str] | None = None) -> EdgeMode:
     env = os.environ if environ is None else environ
     if any(name in env for name in RETIRED_ENV):
         raise Refusal(RefusalCode.EDGE_CONFIG_INVALID)
-    if env.get(FIREBASE_ENV):
+    if FIREBASE_ENV in env:
         return _firebase_mode(env)
     if env.get(PLATFORM_ENV):
         return _platform_mode(env)
@@ -250,11 +250,15 @@ def _dev_mode(env: Mapping[str, str]) -> EdgeMode:
 
 
 def _firebase_mode(env: Mapping[str, str]) -> EdgeMode:
-    """Firebase mode (D6), or `EDGE_CONFIG_INVALID`: never beside the platform or
-    the trust switch, an `https` public origin required, the role map well formed."""
+    """Firebase mode (D6), or `EDGE_CONFIG_INVALID`: a project named, never
+    beside the platform or the trust switch, an `https` public origin required,
+    the role map well formed. Selected by the variable's presence (F4), so an
+    empty project is refused here rather than read as another mode."""
     from caos.api.firebase_auth import ROLE_MAP_ENV, role_map
 
     origin = env.get(PUBLIC_ORIGIN_ENV)
+    if not env[FIREBASE_ENV].strip():
+        raise Refusal(RefusalCode.EDGE_CONFIG_INVALID)
     if env.get(PLATFORM_ENV) or TRUST_SWITCH in env:
         raise Refusal(RefusalCode.EDGE_CONFIG_INVALID)
     if origin is None or not _bare_origin(origin) or not origin.startswith("https://"):
@@ -510,10 +514,12 @@ def _rewritten(
 def _repeated_credential(mode: EdgeMode, headers: list[tuple[bytes, bytes]]) -> bool:
     """The one header that decides identity in this mode gets the hygiene the
     others get (F44): two of them name nobody. Behind the platform it is the
-    forwarded token; in firebase mode, `authorization`."""
+    forwarded token; in firebase mode, `authorization` and `cookie` (F3)."""
     if mode.platform:
         return len(_all(headers, PLATFORM_HEADER)) > 1
-    return mode.firebase and len(_all(headers, "authorization")) > 1
+    return mode.firebase and any(
+        len(_all(headers, name)) > 1 for name in ("authorization", "cookie")
+    )
 
 
 def _dev_peer(scope: Scope, headers: list[tuple[bytes, bytes]]) -> bool:

@@ -7,8 +7,9 @@ nothing here reaches the network.
 from __future__ import annotations
 
 import datetime as dt
+import threading
 import time
-from collections.abc import Mapping
+from collections.abc import Callable, Mapping
 from types import MappingProxyType
 from uuid import uuid5
 
@@ -82,6 +83,9 @@ def test_a_valid_token_verifies() -> None:
         {"sub": "x" * 129},
         {"auth_time": int(time.time()) + 3600},
         {"auth_time": None},
+        {"auth_time": True},
+        {"iat": int(time.time()) + 3600},
+        {"aud": [PROJECT, "other"]},
     ],
 )
 def test_a_token_that_breaks_a_rule_is_not_authenticated(
@@ -171,6 +175,18 @@ def test_the_token_comes_from_the_bearer_header_else_the_session_cookie() -> Non
     assert fa.bearer_token(None, None) is None
 
 
+def test_the_session_cookie_is_matched_by_exact_name_and_only_once() -> None:
+    assert fa.bearer_token(None, '__session="abc"') == "abc"
+    assert fa.bearer_token(None, " __session = abc ;y=2") == "abc"
+    assert fa.bearer_token(None, "x__session=abc; __sessionx=abc") is None
+    # Malformed or reserved neighbours do not hide it.
+    for header in ('bad"cookie; __session=abc', "$Version=1; __session=abc; expires"):
+        assert fa.bearer_token(None, header) == "abc"
+    with pytest.raises(Refusal) as refused:
+        fa.bearer_token(None, "__session=a; x=1; __session=b")
+    assert refused.value.code is RefusalCode.NOT_AUTHENTICATED
+
+
 def _actor(authorization: object, cookie: object = None) -> object:
     async def run() -> object:
         return await fa.actor_from_firebase(authorization, cookie)
@@ -198,6 +214,19 @@ def test_an_email_outside_the_map_is_not_authorised(
     monkeypatch.setattr(fa, "_KEYS", KEYS)
     with pytest.raises(Refusal) as refused:
         _actor(f"Bearer {_token()}")
+    assert refused.value.code is RefusalCode.NOT_AUTHORISED
+
+
+def test_an_email_that_is_not_ascii_is_not_authorised(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("CAOS_FIREBASE_PROJECT", PROJECT)
+    monkeypatch.setenv("CAOS_ROLE_MAP", "kim@b.c=ADMIN")
+    monkeypatch.setattr(fa, "_KEYS", KEYS)
+    kelvin = "\u212aim@b.c"  # KELVIN SIGN, which `str.lower` folds to "k"
+    assert kelvin.lower() == "kim@b.c"
+    with pytest.raises(Refusal) as refused:
+        _actor(f"Bearer {_token({'email': kelvin})}")
     assert refused.value.code is RefusalCode.NOT_AUTHORISED
 
 
@@ -234,3 +263,165 @@ def test_identity_reads_the_firebase_token_and_not_the_dev_headers(
     with pytest.raises(Refusal) as refused:
         anyio.run(run, claimed)
     assert refused.value.code is RefusalCode.NOT_AUTHENTICATED
+
+
+def test_an_empty_firebase_project_is_still_firebase_mode(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("CAOS_FIREBASE_PROJECT", "")
+    monkeypatch.setenv("CAOS_TRUST_ROLE_HEADER", "1")
+
+    async def run() -> Actor:
+        claimed = {"x-caos-user": str(uuid5(fa.NAMESPACE, "x")), "x-caos-role": "ADMIN"}
+        return await actor_from_headers(claimed)
+
+    with pytest.raises(Refusal) as refused:
+        anyio.run(run)
+    assert refused.value.code is RefusalCode.NOT_AUTHENTICATED
+
+
+class _Clock:
+    def __init__(self) -> None:
+        self.now = 1000.0
+
+    def __call__(self) -> float:
+        return self.now
+
+
+def _counted(
+    answers: list[tuple[dict[str, str], float] | None],
+) -> tuple[list[int], Callable[[], tuple[dict[str, str], float]]]:
+    """A fetch answering `answers` in turn, None as an outage; and its call count."""
+    calls = [0]
+
+    def fetch() -> tuple[dict[str, str], float]:
+        answer = answers[min(calls[0], len(answers) - 1)]
+        calls[0] += 1
+        if answer is None:
+            raise OSError
+        return answer
+
+    return calls, fetch
+
+
+def test_a_failing_fetch_is_tried_once_per_floor_under_forged_key_ids() -> None:
+    clock = _Clock()
+    calls, fetch = _counted([None])
+    keys = fa.GoogleKeys(fetch=fetch, clock=clock)
+    for forged in range(50):
+        with pytest.raises(Refusal) as refused:
+            keys.key(f"forged-{forged}")
+        assert refused.value.code is RefusalCode.IDENTITY_UNAVAILABLE
+    assert calls[0] == 1
+    clock.now += fa.REFETCH_FLOOR_SECONDS - 1
+    with pytest.raises(Refusal):
+        keys.key("forged")
+    assert calls[0] == 1
+    clock.now += 1
+    with pytest.raises(Refusal):
+        keys.key("forged")
+    assert calls[0] == 2
+
+
+def test_a_cached_key_is_served_while_a_slow_fetch_is_in_flight() -> None:
+    clock = _Clock()
+    pem = _cert_pem()
+    started, release = threading.Event(), threading.Event()
+    calls = [0]
+
+    def fetch() -> tuple[dict[str, str], float]:
+        calls[0] += 1
+        if calls[0] > 1:
+            started.set()
+            release.wait(10)
+        return {"k1": pem}, 3600.0
+
+    keys = fa.GoogleKeys(fetch=fetch, clock=clock)
+    keys.key("k1")
+    clock.now += 3600.0  # stale: the next caller refreshes
+    slow = threading.Thread(target=lambda: keys.key("k1"))
+    slow.start()
+    assert started.wait(10)
+    begun = time.monotonic()
+    assert isinstance(keys.key("k1"), rsa.RSAPublicKey)
+    with pytest.raises(Refusal) as refused:
+        keys.key("forged")
+    assert refused.value.code is RefusalCode.NOT_AUTHENTICATED
+    assert time.monotonic() - begun < 1.0
+    release.set()
+    slow.join(10)
+    assert calls[0] == 2
+
+
+def test_stale_keys_serve_within_the_grace_and_are_refused_after_it() -> None:
+    clock = _Clock()
+    calls, fetch = _counted([({"k1": _cert_pem()}, 3600.0), None])
+    keys = fa.GoogleKeys(fetch=fetch, clock=clock)
+    keys.key("k1")
+    clock.now += 3600.0 + fa.STALE_GRACE_SECONDS - 1
+    assert isinstance(keys.key("k1"), rsa.RSAPublicKey)
+    assert calls[0] == 2
+    clock.now += fa.REFETCH_FLOOR_SECONDS
+    with pytest.raises(Refusal) as refused:
+        keys.key("k1")
+    assert refused.value.code is RefusalCode.IDENTITY_UNAVAILABLE
+    assert calls[0] == 3
+
+
+@pytest.mark.parametrize(
+    ("max_age", "kept"),
+    [(0.0, fa.MIN_CACHE_SECONDS), (1e9, fa.MAX_CACHE_SECONDS), (300.0, 300.0)],
+)
+def test_the_cache_lifetime_is_held_between_a_minute_and_a_day(
+    max_age: float, kept: float
+) -> None:
+    clock = _Clock()
+    calls, fetch = _counted([({"k1": _cert_pem()}, max_age)])
+    keys = fa.GoogleKeys(fetch=fetch, clock=clock)
+    keys.key("k1")
+    clock.now += kept - 1
+    keys.key("k1")
+    assert calls[0] == 1
+    clock.now += 1
+    keys.key("k1")
+    assert calls[0] == 2
+
+
+def test_the_fetch_reads_max_age_in_any_case_and_refuses_a_bad_answer(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    def answering(
+        status: int, control: str
+    ) -> Callable[[float], tuple[int, bytes, str] | None]:
+        return lambda deadline: (status, b'{"k1": "pem"}', control)
+
+    monkeypatch.setattr(fa, "_certificates", answering(200, "public, MAX-AGE=300"))
+    assert fa._fetch() == ({"k1": "pem"}, 300.0)
+    monkeypatch.setattr(fa, "_certificates", answering(200, "no-cache"))
+    assert fa._fetch() == ({"k1": "pem"}, 0.0)
+    for broken in (answering(500, ""), lambda deadline: None):
+        monkeypatch.setattr(fa, "_certificates", broken)
+        with pytest.raises(Refusal) as refused:
+            fa._fetch()
+        assert refused.value.code is RefusalCode.IDENTITY_UNAVAILABLE
+
+
+def test_the_fetch_stops_waiting_at_its_deadline(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    release = threading.Event()
+
+    def stalled(deadline: float) -> tuple[int, bytes, str] | None:
+        release.wait(10)
+        return None
+
+    monkeypatch.setattr(fa, "_certificates", stalled)
+    monkeypatch.setattr(fa, "CERTS_DEADLINE_SECONDS", 0.05)
+    begun = time.monotonic()
+    try:
+        with pytest.raises(Refusal) as refused:
+            fa._fetch()
+        assert refused.value.code is RefusalCode.IDENTITY_UNAVAILABLE
+        assert time.monotonic() - begun < 1.0
+    finally:
+        release.set()
