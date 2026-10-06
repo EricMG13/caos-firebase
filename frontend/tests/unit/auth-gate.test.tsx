@@ -1,7 +1,8 @@
 import { act, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
-type Listener = (user: { getIdToken(): Promise<string> } | null) => void;
+type Held = { getIdTokenResult(): Promise<{ token: string; expirationTime: string }> };
+type Listener = (user: Held | null) => void;
 const mocks = vi.hoisted(() => ({
   listeners: [] as Listener[],
   signIn: vi.fn(),
@@ -22,11 +23,21 @@ import { SESSION_COOKIE, auth, writeSessionCookie } from "../../src/app/firebase
 
 const CLIENT = {} as never;
 
+function held(token: string, expiresInMs: number): Held {
+  return {
+    getIdTokenResult: async () => ({
+      token,
+      expirationTime: new Date(Date.now() + expiresInMs + 500).toUTCString(),
+    }),
+  };
+}
+
 function cookieWrites() {
   return vi.spyOn(document, "cookie", "set");
 }
 
 afterEach(() => {
+  vi.useRealTimers();
   vi.restoreAllMocks();
   mocks.signIn.mockReset();
 });
@@ -89,11 +100,115 @@ describe("AuthGate", () => {
         <p>workspace</p>
       </AuthGate>,
     );
-    act(() => mocks.listeners.at(-1)!({ getIdToken: async () => "tok" }));
+    act(() => mocks.listeners.at(-1)!(held("tok", 1_800_000)));
     expect(await screen.findByText("workspace")).toBeInTheDocument();
-    expect(writes).toHaveBeenCalledWith(
-      "__session=tok; Path=/; Secure; SameSite=Strict; Max-Age=3600",
+    expect(writes.mock.calls[0]![0]).toMatch(
+      /^__session=tok; Path=\/; Secure; SameSite=Strict; Max-Age=(1799|1800)$/,
     );
+  });
+});
+
+describe("AuthGate session upkeep", () => {
+  it("clears the cookie and asks again when the token cannot be read", async () => {
+    const writes = cookieWrites();
+    render(
+      <AuthGate client={CLIENT}>
+        <p>workspace</p>
+      </AuthGate>,
+    );
+    act(() =>
+      mocks.listeners.at(-1)!({
+        getIdTokenResult: () => Promise.reject(new Error("offline")),
+      }),
+    );
+    expect(await screen.findByLabelText("Email")).toBeInTheDocument();
+    expect(writes).toHaveBeenLastCalledWith(
+      "__session=; Path=/; Secure; SameSite=Strict; Max-Age=0",
+    );
+  });
+
+  it("clears the cookie when the user signs out", async () => {
+    const writes = cookieWrites();
+    render(
+      <AuthGate client={CLIENT}>
+        <p>workspace</p>
+      </AuthGate>,
+    );
+    act(() => mocks.listeners.at(-1)!(held("tok", 60_000)));
+    await screen.findByText("workspace");
+    act(() => mocks.listeners.at(-1)!(null));
+    await screen.findByLabelText("Email");
+    expect(writes).toHaveBeenLastCalledWith(
+      "__session=; Path=/; Secure; SameSite=Strict; Max-Age=0",
+    );
+  });
+
+  it("never lets a slower, older token overwrite a newer one", async () => {
+    const writes = cookieWrites();
+    let release: (value: { token: string; expirationTime: string }) => void = () => undefined;
+    render(
+      <AuthGate client={CLIENT}>
+        <p>workspace</p>
+      </AuthGate>,
+    );
+    act(() =>
+      mocks.listeners.at(-1)!({
+        getIdTokenResult: () => new Promise((resolve) => (release = resolve)),
+      }),
+    );
+    act(() => mocks.listeners.at(-1)!(held("new", 60_000)));
+    await screen.findByText("workspace");
+    await act(async () => release({ token: "old", expirationTime: new Date().toUTCString() }));
+    expect(writes).toHaveBeenCalledTimes(1);
+    expect(writes.mock.calls[0]![0]).toContain("__session=new");
+  });
+
+  it("asks the SDK for a token every five minutes and when the tab returns", async () => {
+    vi.useFakeTimers();
+    const getIdToken = vi.fn().mockResolvedValue("tok");
+    const client = { currentUser: { getIdToken } } as never;
+    render(
+      <AuthGate client={client}>
+        <p>workspace</p>
+      </AuthGate>,
+    );
+    await act(async () => {
+      mocks.listeners.at(-1)!(held("tok", 3_600_000));
+      await vi.advanceTimersByTimeAsync(0);
+    });
+    expect(screen.getByText("workspace")).toBeInTheDocument();
+    expect(getIdToken).not.toHaveBeenCalled();
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(5 * 60 * 1000);
+    });
+    expect(getIdToken).toHaveBeenCalledTimes(1);
+    act(() => {
+      document.dispatchEvent(new Event("visibilitychange"));
+    });
+    expect(getIdToken).toHaveBeenCalledTimes(2);
+  });
+
+  it("stops refreshing once signed out", async () => {
+    vi.useFakeTimers();
+    const getIdToken = vi.fn().mockResolvedValue("tok");
+    const client = { currentUser: { getIdToken } } as never;
+    render(
+      <AuthGate client={client}>
+        <p>workspace</p>
+      </AuthGate>,
+    );
+    await act(async () => {
+      mocks.listeners.at(-1)!(held("tok", 3_600_000));
+      await vi.advanceTimersByTimeAsync(0);
+    });
+    await act(async () => {
+      mocks.listeners.at(-1)!(null);
+      await vi.advanceTimersByTimeAsync(0);
+    });
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(10 * 60 * 1000);
+    });
+    expect(getIdToken).not.toHaveBeenCalled();
   });
 });
 

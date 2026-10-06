@@ -197,7 +197,7 @@ export function AppSidebar({
                 variant="ghost"
                 size="sm"
                 className={FOOT_CONTROL}
-                onClick={() => void signOut(client)}
+                onClick={() => void signOut(client).catch(() => undefined)}
               >
                 <LogOutIcon />
                 <span className="group-data-[collapsible=icon]:hidden">Sign out</span>
