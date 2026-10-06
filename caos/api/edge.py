@@ -3,8 +3,9 @@
 The spec's §4 (`docs/rebuild/2026-09-22-caos-databricks-spec.md`) and D10 in
 `docs/rebuild/decisions.md`. D10: the platform is the edge. The legacy host's
 static shared secret, and the signed per-request HMAC assertion that replaced
-it, are both gone (spec §54); a deployment is either behind a Databricks App
-or it is a loopback development image, and there is no third thing.
+it, are both gone (spec §54); a deployment is behind a Databricks App, behind
+Firebase Auth on Cloud Run (D6 in `docs/decisions.md`), or a loopback
+development image.
 
 **The platform's contract.** Databricks Apps authenticates the caller with
 OIDC ahead of this process and forwards the caller's own access token in
@@ -12,7 +13,7 @@ OIDC ahead of this process and forwards the caller's own access token in
 names with SCIM. It passes `origin`, `sec-fetch-*`, `idempotency-key`,
 `last-event-id`, `content-type` and `content-length` through.
 
-**Two modes, decided by the environment on every use.**
+**Three modes, decided by the environment on every use.**
 
 - *Platform mode* (`PLATFORM_ENV` set): the workspace id must be configured
   and any declared `CAOS_PUBLIC_ORIGIN` or `DATABRICKS_HOST` well-formed, or
@@ -31,7 +32,14 @@ names with SCIM. It passes `origin`, `sec-fetch-*`, `idempotency-key`,
   different one (CF-056), which must be well-formed or boot refuses
   `EDGE_CONFIG_INVALID`.
 
-In both modes a repeated or lookalike identity header is 401
+- *Firebase mode* (`FIREBASE_ENV` set, D6): never beside the platform or the
+  trust switch, an `https` `CAOS_PUBLIC_ORIGIN` and a well-formed role map
+  required, or boot refuses `EDGE_CONFIG_INVALID`. Any peer is served; the
+  identity headers are dropped as in platform mode, a repeated `authorization`
+  is 401, and `caos/api/firebase_auth.py` verifies the caller's ID token. The
+  policy's `connect-src` admits Firebase Auth's two hosts (`FIREBASE_CSP`).
+
+In every mode a repeated or lookalike identity header is 401
 `NOT_AUTHENTICATED`; `/api` is checked for Origin and `Sec-Fetch-Site` (the
 second half of Task 4.2's CSRF split); and every response carries the
 security headers and policy, with no cookie and no CORS header.
@@ -59,6 +67,7 @@ import anyio
 from starlette.types import ASGIApp, Message, Receive, Scope, Send
 
 from caos.api.identity import (
+    FIREBASE_ENV,
     GROUPS_HEADER,
     HOST_ENV,
     PLATFORM_HEADER,
@@ -117,6 +126,13 @@ SECURITY_HEADERS: Mapping[str, str] = {
     "cross-origin-opener-policy": "same-origin",
     "cross-origin-resource-policy": "same-origin",
 }
+# Firebase mode only: email/password sign-in and token refresh are plain HTTPS
+# calls to these two hosts, and nothing else in the policy moves (D6).
+FIREBASE_CSP = SECURITY_HEADERS["content-security-policy"].replace(
+    "connect-src 'self'",
+    "connect-src 'self' https://identitytoolkit.googleapis.com "
+    "https://securetoken.googleapis.com",
+)
 _STRIPPED = (b"set-cookie", b"cache-control")
 _ASSET_CACHE = "public, max-age=31536000, immutable"
 
@@ -194,10 +210,12 @@ async def startup_failed(receive: Receive, send: Send) -> None:
 
 @dataclass(frozen=True, slots=True)
 class EdgeMode:
-    """Platform mode behind a Databricks App; dev mode otherwise (D10)."""
+    """Platform mode behind a Databricks App, firebase mode under a Firebase
+    project (D6); dev mode otherwise (D10)."""
 
     public_origin: str | None
     platform: bool = False
+    firebase: bool = False
 
 
 def resolve_mode(environ: Mapping[str, str] | None = None) -> EdgeMode:
@@ -206,6 +224,8 @@ def resolve_mode(environ: Mapping[str, str] | None = None) -> EdgeMode:
     env = os.environ if environ is None else environ
     if any(name in env for name in RETIRED_ENV):
         raise Refusal(RefusalCode.EDGE_CONFIG_INVALID)
+    if env.get(FIREBASE_ENV):
+        return _firebase_mode(env)
     if env.get(PLATFORM_ENV):
         return _platform_mode(env)
     return _dev_mode(env)
@@ -227,6 +247,20 @@ def _dev_mode(env: Mapping[str, str]) -> EdgeMode:
     if origin is not None and not _bare_origin(origin):
         raise Refusal(RefusalCode.EDGE_CONFIG_INVALID)
     return EdgeMode(public_origin=origin)
+
+
+def _firebase_mode(env: Mapping[str, str]) -> EdgeMode:
+    """Firebase mode (D6), or `EDGE_CONFIG_INVALID`: never beside the platform or
+    the trust switch, an `https` public origin required, the role map well formed."""
+    from caos.api.firebase_auth import ROLE_MAP_ENV, role_map
+
+    origin = env.get(PUBLIC_ORIGIN_ENV)
+    if env.get(PLATFORM_ENV) or TRUST_SWITCH in env:
+        raise Refusal(RefusalCode.EDGE_CONFIG_INVALID)
+    if origin is None or not _bare_origin(origin) or not origin.startswith("https://"):
+        raise Refusal(RefusalCode.EDGE_CONFIG_INVALID)
+    role_map(env.get(ROLE_MAP_ENV, ""))
+    return EdgeMode(public_origin=origin, firebase=True)
 
 
 def _platform_mode(env: Mapping[str, str]) -> EdgeMode:
@@ -396,10 +430,10 @@ class EdgeGuard:
         # any other code -- a refusal included -- runs, on the health path
         # too (F44): what the application reads is never a header the client
         # itself could set.
-        edged = mode is None or mode.platform
+        edged = mode is None or mode.platform or mode.firebase
         scope["headers"] = _rewritten(scope.get("headers", []), edged=edged)
         scope["caos.edge_guarded"] = True
-        guarded = _secured(send, path)
+        guarded = _secured(send, path, firebase=mode is not None and mode.firebase)
         if refusal is not None:
             await _refuse(guarded, refusal)
             return
@@ -451,13 +485,9 @@ class EdgeGuard:
             return (None if health else RefusalCode.EDGE_NOT_TRUSTED), None
         if health:
             return None, mode
-        if not mode.platform and not _dev_peer(scope, headers):
+        if not (mode.platform or mode.firebase) and not _dev_peer(scope, headers):
             return RefusalCode.EDGE_NOT_TRUSTED, mode
-        if not _hygienic(headers):
-            return RefusalCode.NOT_AUTHENTICATED, mode
-        # The one header that decides identity behind the platform gets the
-        # hygiene the others get (F44): two of them name nobody.
-        if mode.platform and len(_all(headers, PLATFORM_HEADER)) > 1:
+        if not _hygienic(headers) or _repeated_credential(mode, headers):
             return RefusalCode.NOT_AUTHENTICATED, mode
         if is_api_path(path) and not _origin_allowed(mode, method, headers):
             return RefusalCode.ORIGIN_REFUSED, mode
@@ -475,6 +505,15 @@ def _rewritten(
         return list(headers)
     dropped = {name.encode() for name in _IDENTITY}
     return [(key, value) for key, value in headers if key.lower() not in dropped]
+
+
+def _repeated_credential(mode: EdgeMode, headers: list[tuple[bytes, bytes]]) -> bool:
+    """The one header that decides identity in this mode gets the hygiene the
+    others get (F44): two of them name nobody. Behind the platform it is the
+    forwarded token; in firebase mode, `authorization`."""
+    if mode.platform:
+        return len(_all(headers, PLATFORM_HEADER)) > 1
+    return mode.firebase and len(_all(headers, "authorization")) > 1
 
 
 def _dev_peer(scope: Scope, headers: list[tuple[bytes, bytes]]) -> bool:
@@ -561,7 +600,7 @@ def _cache_policy(path: str, status: int) -> str:
     return "no-cache"
 
 
-def _secured(send: Send, path: str) -> Send:
+def _secured(send: Send, path: str, *, firebase: bool = False) -> Send:
     """Every response start gains the policy and loses any cookie or CORS."""
 
     async def wrapped(message: Message) -> None:
@@ -573,7 +612,7 @@ def _secured(send: Send, path: str) -> Send:
                 and key.lower() not in SECURITY_HEADERS_BYTES
                 and not key.lower().startswith(b"access-control-")
             ]
-            kept.extend(_security_header_pairs(path))
+            kept.extend(_security_header_pairs(path, firebase=firebase))
             cache = _cache_policy(path, message["status"])
             kept.append((b"cache-control", cache.encode()))
             message = {**message, "headers": kept}
@@ -582,13 +621,20 @@ def _secured(send: Send, path: str) -> Send:
     return wrapped
 
 
-def _security_header_pairs(path: str) -> tuple[tuple[bytes, bytes], ...]:
+def _security_header_pairs(
+    path: str, *, firebase: bool = False
+) -> tuple[tuple[bytes, bytes], ...]:
     """The security headers this response carries: every one, unchanged, on
     every path but the deliverable render, which keeps every header but a
-    narrower `content-security-policy` (`_DELIVERABLE_RENDER_CSP`)."""
-    if not _DELIVERABLE_RENDER.match(path):
+    narrower `content-security-policy` (`_DELIVERABLE_RENDER_CSP`) in every
+    mode. Firebase mode's policy elsewhere is `FIREBASE_CSP`."""
+    if _DELIVERABLE_RENDER.match(path):
+        policy = _DELIVERABLE_RENDER_CSP
+    elif firebase:
+        policy = FIREBASE_CSP
+    else:
         return SECURITY_HEADER_PAIRS
-    narrowed = {**SECURITY_HEADERS, "content-security-policy": _DELIVERABLE_RENDER_CSP}
+    narrowed = {**SECURITY_HEADERS, "content-security-policy": policy}
     return tuple((name.encode(), value.encode()) for name, value in narrowed.items())
 
 

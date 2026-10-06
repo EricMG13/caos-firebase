@@ -31,3 +31,6 @@ Later entries override earlier ones. Details live in the design spec named in ea
   loopback host only (the workspace stub answers there); anything else is refused. The
   OpenRouter-free gate (A28) exempts `caos/models.py` alone, the one production seam.
 - D9 (2026-10-06) — Tests that pinned upstream commits (b1c1c83, 84eb06d) are re-anchored on synthetic commits: the fork's fresh history (D1) does not carry them.
+- D10 (2026-10-06) — PyJWT and cryptography, already locked through other packages,
+  become direct dependencies: caos/api/firebase_auth.py verifies Firebase ID tokens
+  with them (D6).
