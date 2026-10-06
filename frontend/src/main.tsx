@@ -1,6 +1,7 @@
 import { StrictMode } from "react";
 import { createRoot } from "react-dom/client";
 import { App } from "./app/App";
+import { AuthGate } from "./app/AuthGate";
 import { applyTheme, storedTheme } from "./app/theme";
 import "./styles/tokens.css";
 import "./styles/caos.css";
@@ -18,6 +19,8 @@ if (!root) throw new Error("no root element");
 // reader sees instead).
 createRoot(root, { onCaughtError() {} }).render(
   <StrictMode>
-    <App />
+    <AuthGate>
+      <App />
+    </AuthGate>
   </StrictMode>,
 );

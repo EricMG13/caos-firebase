@@ -2,6 +2,7 @@
 // state, then the section-local group; the case switcher heads it and the foot
 // carries the served role and two refused controls, all inside
 // the one landmark. At a zoomed width (400%, D63) the same sidebar is a sheet.
+import { signOut } from "firebase/auth";
 import { NavLink } from "react-router";
 import {
   ChartSplineIcon,
@@ -33,6 +34,8 @@ import {
   SidebarRail,
   useSidebar,
 } from "@/components/ui/sidebar";
+import { auth } from "@/app/firebase";
+import { Button } from "@/components/ui/button";
 import { RefusedControl } from "@/controls/RefusedControl";
 import {
   SECTIONS,
@@ -100,6 +103,7 @@ export function AppSidebar({
   caseId: string | null;
 }) {
   const { setOpenMobile } = useSidebar();
+  const client = auth;
   const byId = new Map((entries ?? []).map((entry) => [entry.section, entry]));
   const ask = section ? ASK_SCOPE[section] : "the workspace";
   return (
@@ -188,21 +192,33 @@ export function AppSidebar({
               <MessageSquareIcon />
               <span className="group-data-[collapsible=icon]:hidden">Ask</span>
             </RefusedControl>
-            <RefusedControl
-              variant="ghost"
-              size="sm"
-              className={FOOT_CONTROL}
-              reasonDisplay="tooltip"
-              refusal={{
-                code: "SIGN_OUT_UNPLACED",
-                clears:
-                  "the authenticating proxy serves sign-out — this workspace holds no session of its own",
-              }}
-              aria-label="Sign out"
-            >
-              <LogOutIcon />
-              <span className="group-data-[collapsible=icon]:hidden">Sign out</span>
-            </RefusedControl>
+            {client ? (
+              <Button
+                variant="ghost"
+                size="sm"
+                className={FOOT_CONTROL}
+                onClick={() => void signOut(client)}
+              >
+                <LogOutIcon />
+                <span className="group-data-[collapsible=icon]:hidden">Sign out</span>
+              </Button>
+            ) : (
+              <RefusedControl
+                variant="ghost"
+                size="sm"
+                className={FOOT_CONTROL}
+                reasonDisplay="tooltip"
+                refusal={{
+                  code: "SIGN_OUT_UNPLACED",
+                  clears:
+                    "the authenticating proxy serves sign-out — this workspace holds no session of its own",
+                }}
+                aria-label="Sign out"
+              >
+                <LogOutIcon />
+                <span className="group-data-[collapsible=icon]:hidden">Sign out</span>
+              </RefusedControl>
+            )}
           </div>
         </SidebarFooter>
         <SidebarRail />
