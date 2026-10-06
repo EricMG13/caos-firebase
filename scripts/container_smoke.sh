@@ -3,7 +3,7 @@
 # Postgres, wait for every health code OK, and assert a token-less read is 401.
 # Needs no real credential; cleans up the container and the database on exit.
 set -u
-cd "$(dirname "$0")/.."
+cd "$(dirname "$0")/.." || exit 1
 
 ADMIN_URL="postgresql://postgres:local-test-admin-only@127.0.0.1:55437/postgres"
 DB=caos_container_smoke
@@ -28,6 +28,19 @@ trap cleanup EXIT
 
 cleanup
 db "CREATE DATABASE $DB" || { echo "FAIL: cannot create the database"; exit 1; }
+
+# Never fill the shared Docker VM disk: measure its root filesystem, not the Mac's.
+MIN_GB="${SMOKE_MIN_FREE_GB:-5}"
+avail_kb=$(docker run --rm --entrypoint df python:3.13-slim -Pk / 2>/dev/null |
+  awk 'NR==2 {print $4}')
+case "$avail_kb" in
+  '' | *[!0-9]*) echo "FAIL: cannot measure docker disk"; exit 1 ;;
+esac
+free_gb=$((avail_kb / 1024 / 1024))
+if [ "$avail_kb" -lt $((MIN_GB * 1024 * 1024)) ]; then
+  echo "FAIL: docker disk has $free_gb GB free; need >= $MIN_GB GB"
+  exit 1
+fi
 docker build -t "$IMAGE" . >/dev/null || { echo "FAIL: docker build"; exit 1; }
 
 docker run -d --name "$NAME" -p "127.0.0.1:${PORT}:8000" \
