@@ -30,6 +30,9 @@ Later entries override earlier ones. Details live in the design spec named in ea
   adapter's form). `CAOS_MODEL_BASE_URL` overrides the base URL: https, or http to a
   loopback host only (the workspace stub answers there); anything else is refused. The
   OpenRouter-free gate (A28) exempts `caos/models.py` alone, the one production seam.
+- D10 (2026-10-06) — PyJWT and cryptography, already locked through other packages,
+  become direct dependencies: caos/api/firebase_auth.py verifies Firebase ID tokens
+  with them (D6).
 - D23 (2026-10-11) — Every OpenRouter request carries upstream's cache-off option
   `prompt_cache_options: {mode: explicit}` (F545): automatic prompt caching wrote the
   prompt on almost every call and was rarely read back, so the ledger understated the

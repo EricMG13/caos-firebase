@@ -115,6 +115,8 @@ LOOPBACK_PEER = ("127.0.0.1", 50000)
 LOOPBACK_HEADERS = {"sec-fetch-site": "same-origin"}
 # The development shell exports the trust switch; a suite that needs it sets it.
 _AMBIENT_IDENTITY = (
+    "CAOS_FIREBASE_PROJECT",
+    "CAOS_ROLE_MAP",
     "CAOS_PUBLIC_ORIGIN",
     "CAOS_TRUST_ROLE_HEADER",
     "DATABRICKS_APP_NAME",

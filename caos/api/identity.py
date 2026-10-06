@@ -80,6 +80,9 @@ ROLE_HEADER = "x-caos-role"
 # `Me`), and the role is read from the workspace groups named below.
 PLATFORM_ENV = "DATABRICKS_APP_NAME"
 PLATFORM_HEADER = "x-forwarded-access-token"
+# Firebase mode (FD6): the caller is whoever a verified Firebase ID token names
+# (`caos/api/firebase_auth.py`); no header but the token is read.
+FIREBASE_ENV = "CAOS_FIREBASE_PROJECT"
 GROUP_ADMIN_ENV = "CAOS_GROUP_ADMIN"
 GROUP_ANALYST_ENV = "CAOS_GROUP_ANALYST"
 WORKSPACE_ENV = "DATABRICKS_WORKSPACE_ID"
@@ -166,6 +169,11 @@ async def actor_from_headers(headers: object) -> Actor:
     get = getattr(headers, "get", None)
     if get is None:
         raise Refusal(RefusalCode.NOT_AUTHENTICATED)
+    if os.environ.get(FIREBASE_ENV):
+        # Imported here: `firebase_auth` imports this module's `Actor`.
+        from caos.api.firebase_auth import actor_from_firebase
+
+        return await actor_from_firebase(get("authorization"), get("cookie"))
     if os.environ.get(PLATFORM_ENV):
         return await actor_from_token(get(PLATFORM_HEADER))
 
