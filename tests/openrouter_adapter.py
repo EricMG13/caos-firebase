@@ -75,7 +75,7 @@ from openai._streaming import ServerSentEvent, SSEBytesDecoder
 from pydantic import SecretStr
 
 # Caching off (F545): explicit mode, no breakpoint, so no call pays a write;
-# one literal, shared with production's request (D23).
+# one literal, shared with production's request (FD23).
 from caos.models import CACHE_OFF as CACHE_OFF
 from caos.provider import MAX_COMPLETION_TOKENS, TIMEOUT_SECONDS
 

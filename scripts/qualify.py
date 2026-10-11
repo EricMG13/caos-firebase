@@ -11,9 +11,9 @@ here, under the same gates as everything else it calls.
 It creates a database of its own, so a performed set can be kept for
 re-checking without touching a developer's own store, and it prints where that
 and the blobs are. Configuration is the caller's environment and nothing else:
-the provider is `caos.models.from_environment` -- `ChatDatabricks` on
-`CAOS_MODEL_ENDPOINT` through the caller's Databricks CLI profile
-(`DATABRICKS_CONFIG_PROFILE`), the production path -- unless the test-only
+the provider is `caos.models.from_environment` -- OpenRouter's `ChatOpenAI`
+on `CAOS_MODEL_ENDPOINT`, the production chat model (FD8); a paid call needs
+`OPENROUTER_API_KEY` -- unless the test-only
 `tests/qualify_openrouter.py` wraps this script with `OPENROUTER_*` (§16);
 `CAOS_MODEL_PRICE` for the dated price
 the reservation is computed from, `CAOS_QUALIFY_POSTGRES_URL` for the

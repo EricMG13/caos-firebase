@@ -28,8 +28,12 @@ LIVE_CONFIGURATION = frozenset(
         "CAOS_MODEL_PRICE",
         "CAOS_REASONING_EFFORT",
         "CAOS_REQUIRE_PROVIDER",
-        # Test-only: the OpenRouter adapter under tests/ reads the key.
+        # The OpenRouter key (FD8) is read by the production model factory
+        # and the adapter under tests/; the provider pin and base URL
+        # override are read by the factory alone.
         "OPENROUTER_API_KEY",
+        "CAOS_PROVIDER_ORDER",
+        "CAOS_MODEL_BASE_URL",
         # The ceiling is read by the live suite alone.
         "CAOS_RUN_CEILING",
     }

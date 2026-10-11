@@ -78,7 +78,7 @@ PROVIDER_ORDER_ENV = "CAOS_PROVIDER_ORDER"
 # https, or plain http to this machine alone (a local stand-in).
 MODEL_BASE_URL_ENV = "CAOS_MODEL_BASE_URL"
 LOOPBACK_HOSTS = frozenset(("localhost", "127.0.0.1", "::1"))
-# Caching off on every OpenRouter request (F545, D23): explicit mode with no
+# Caching off on every OpenRouter request (F545, FD23): explicit mode with no
 # breakpoint writes nothing, so the bill matches the price pin (invariant 8).
 CACHE_OFF: dict[str, object] = {"prompt_cache_options": {"mode": "explicit"}}
 HOST_MINTED = "host-"

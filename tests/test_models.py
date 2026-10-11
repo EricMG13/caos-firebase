@@ -201,7 +201,7 @@ def test_the_chat_model_is_openrouter_with_the_deadline_and_no_retry(
     assert chat.max_retries == 0
     assert chat.request_timeout == TIMEOUT_SECONDS
     assert chat.max_tokens == MAX_COMPLETION_TOKENS
-    # Caching off on every request, set or not (F545, D23).
+    # Caching off on every request, set or not (F545, FD23).
     assert chat.extra_body == {"prompt_cache_options": {"mode": "explicit"}}
     other = chat_model(endpoint="other")
     assert isinstance(other, ChatOpenAI)

@@ -6,7 +6,7 @@
 
 **Architecture:** One Cloud Run service runs `python -m caos.serve` (API, built frontend and in-process worker) on one always-on instance. A new `firebase` edge mode verifies Firebase ID tokens on the server and maps emails to roles. `caos.models.chat_model` answers through OpenRouter. The Databricks code stays in the tree, unconfigured (Phase 2 deletes it).
 
-**Tech Stack:** Python 3.13, uv, FastAPI/Starlette, psycopg, LangGraph, PyJWT + cryptography (already locked), langchain-openai (already locked), React 19 + Vite, `firebase` JS SDK (new, D7), Docker, Cloud Build, Cloud Run, Cloud SQL Postgres 17, Cloud Storage FUSE, Secret Manager.
+**Tech Stack:** Python 3.13, uv, FastAPI/Starlette, psycopg, LangGraph, PyJWT + cryptography (already locked), langchain-openai (already locked), React 19 + Vite, `firebase` JS SDK (new, FD7), Docker, Cloud Build, Cloud Run, Cloud SQL Postgres 17, Cloud Storage FUSE, Secret Manager.
 
 **Spec:** `docs/specs/2026-10-04-firebase-design.md`
 
@@ -15,7 +15,7 @@
 - Every gate in `CLAUDE.md` exits 0; none is loosened; suppression counts (`tests/gate_baseline.json`) may only fall — no new `noqa`, `type: ignore`, `nosec`, `pragma`, skip.
 - Every public definition is named by a test (`scripts/check_tested.py`); every module under `caos/api/` declares `IO_BUDGET`.
 - Typed refusals only; never `str(exc)` on the wire or in a log; never log a token, an email or document text.
-- New dependency only with a `Dn` in `docs/decisions.md` (D7 covers `firebase`; D8 in Task 1 covers promoting `langchain-openai`).
+- New dependency only with a `Dn` in `docs/decisions.md` (FD7 covers `firebase`; FD8 in Task 1 covers promoting `langchain-openai`).
 - Each task's diff ≤ 800 changed lines (`scripts/check_pr_size.py`).
 - Tests run with `CAOS_TEST_POSTGRES_URL=postgresql://postgres:local-test-admin-only@127.0.0.1:55437/postgres CAOS_REQUIRE_POSTGRES=1` after `docker compose up -d --wait`.
 - Ledger: `.superpowers/sdd/2026-10-04-firebase-phase1/progress.md`, one line per task: `agent=<name> fix-rounds=<n> gates-first-pass=<y|n>`.
@@ -47,7 +47,7 @@ cd /Users/ericguei/Documents/caos-firebase && git add -A && git commit -m "Fork 
 - Modify: `caos/pricing.py:199-215` (`model_choices`' effort refusal → validation)
 - Modify: `pyproject.toml` (move `langchain-openai>=1.0` from the dev group to `[project].dependencies`), `uv.lock` (`uv lock`)
 - Modify: `tests/test_models.py` (the three tests that patch `databricks_langchain.ChatDatabricks`)
-- Modify: `docs/decisions.md` (D8)
+- Modify: `docs/decisions.md` (FD8)
 
 **Interfaces:**
 - Produces: `caos.models.chat_model(*, endpoint: str | None = None) -> BaseChatModel` returning `langchain_openai.ChatOpenAI`; `caos.models.PLATFORM == "openrouter"`; `caos.pricing.EFFORTS: tuple[str, ...]`; `caos.pricing.reasoning_effort() -> str | None`; env names `OPENROUTER_API_KEY`, `CAOS_REASONING_EFFORT`, `CAOS_PROVIDER_ORDER`.
@@ -125,7 +125,7 @@ EFFORTS = ("minimal", "low", "medium", "high", "xhigh")
 
 
 def reasoning_effort() -> str | None:
-    """The reasoning effort sent with every call (D8), or None when unset; a
+    """The reasoning effort sent with every call (FD8), or None when unset; a
     value outside `EFFORTS` is `PROVIDER_NOT_CONFIGURED`, compared exactly."""
     effort = os.environ.get(REASONING_EFFORT_ENV, "").strip()
     if not effort:
@@ -146,7 +146,7 @@ PROVIDER_ORDER_ENV = "CAOS_PROVIDER_ORDER"
 
 
 def chat_model(*, endpoint: str | None = None) -> BaseChatModel:
-    """The production chat model: OpenRouter's OpenAI-compatible API (D5, D8).
+    """The production chat model: OpenRouter's OpenAI-compatible API (FD5, FD8).
 
     The key is read at the call and never stored or printed. The reasoning
     effort and the provider pin travel in the request body, so the identity
@@ -189,17 +189,17 @@ def from_environment() -> ChatCompletions:
 
 Update the docstrings that say "ChatDatabricks"/"Databricks SDK" in `chat_model` and `completions`.
 
-- [ ] **Step 4: Move the dependency.** In `pyproject.toml` move `"langchain-openai>=1.0",` (and its comment, rewritten as `# The production model provider (D8).`) into `[project].dependencies`; run `uv lock && uv sync --locked --all-groups`. Add to `docs/decisions.md`:
+- [ ] **Step 4: Move the dependency.** In `pyproject.toml` move `"langchain-openai>=1.0",` (and its comment, rewritten as `# The production model provider (FD8).`) into `[project].dependencies`; run `uv lock && uv sync --locked --all-groups`. Add to `docs/decisions.md`:
 
 ```markdown
-- D8 (2026-10-04) — `langchain-openai` (already locked) moves from the test group to the
+- FD8 (2026-10-04) — `langchain-openai` (already locked) moves from the test group to the
   runtime: `caos.models.chat_model` is `ChatOpenAI` on OpenRouter. `CAOS_REASONING_EFFORT`
   is now sent (`reasoning.effort`) and named in the identity, so the N2 refusal becomes a
   validation; `CAOS_PROVIDER_ORDER` pins the provider without fallbacks.
 ```
 
 - [ ] **Step 5: Run the gates touched:** `uv run pytest tests/test_models.py tests/test_pricing*.py tests/test_worker.py -q`, then the full gate list. Expected: PASS. Fix every test that asserted `PLATFORM == "databricks"` or the old identity prefix.
-- [ ] **Step 6: Commit** `git commit -m "OpenRouter is the production model provider (D8)"`.
+- [ ] **Step 6: Commit** `git commit -m "OpenRouter is the production model provider (FD8)"`.
 
 ---
 
@@ -346,7 +346,7 @@ Write each numbered case as its own `test_...` function with the asserts stated.
 - [ ] **Step 3: Implement `caos/api/firebase_auth.py`:**
 
 ```python
-"""Firebase ID tokens, verified here and nowhere else (D6, design §4.3).
+"""Firebase ID tokens, verified here and nowhere else (FD6, design §4.3).
 
 The browser signs in with Firebase Auth and sends its ID token as a bearer
 header, or as the `__session` cookie where it cannot set a header (the run
@@ -564,7 +564,7 @@ def resolve_mode(environ=None) -> EdgeMode:
 
 
 def _firebase_mode(env: Mapping[str, str]) -> EdgeMode:
-    """Firebase mode (D6), or `EDGE_CONFIG_INVALID`: never beside the platform or
+    """Firebase mode (FD6), or `EDGE_CONFIG_INVALID`: never beside the platform or
     the trust switch, an `https` public origin required, the role map well formed."""
     from caos.api.firebase_auth import ROLE_MAP_ENV, role_map
 
@@ -581,7 +581,7 @@ def _firebase_mode(env: Mapping[str, str]) -> EdgeMode:
 
 - [ ] **Step 4: Run to pass:** `uv run pytest tests/test_firebase_auth.py tests/test_edge_firebase.py tests/test_edge*.py tests/test_identity*.py -q` → PASS.
 - [ ] **Step 5: Gates:** full list, especially `check_tested`, `check_vocabulary`, `io_budget --assert`, `check_gate_config` (no suppression rise), bandit floor, mypy, complexipy.
-- [ ] **Step 6: Commit** `git commit -m "Firebase edge mode: server-verified ID tokens, roles from the server's map (D6)"`.
+- [ ] **Step 6: Commit** `git commit -m "Firebase edge mode: server-verified ID tokens, roles from the server's map (FD6)"`.
 
 ---
 
@@ -662,7 +662,7 @@ const config = {
 };
 
 // No popup or redirect resolver: email/password is plain HTTPS to Google, so no
-// third-party script or frame loads and the policy keeps Trusted Types (D6).
+// third-party script or frame loads and the policy keeps Trusted Types (FD6).
 export const auth: Auth | null =
   config.apiKey && config.projectId
     ? initializeAuth(initializeApp(config), { persistence: indexedDBLocalPersistence })
@@ -730,7 +730,7 @@ function SignIn({ client }: { client: Auth }) {
 `main.tsx`: `<StrictMode><AuthGate><App /></AuthGate></StrictMode>`. `vite-env.d.ts`: declare `VITE_FIREBASE_API_KEY`, `VITE_FIREBASE_AUTH_DOMAIN`, `VITE_FIREBASE_PROJECT_ID` as `string | undefined` on `ImportMetaEnv`. `AppSidebar.tsx`: when `auth` is non-null render a plain ghost `Button` "Sign out" calling `signOut(auth)` in place of the `SIGN_OUT_UNPLACED` `RefusedControl`; with `auth` null keep the refused control exactly as now (existing chrome tests run with no Firebase env and must stay green).
 
 - [ ] **Step 4: Pass:** `npm --prefix frontend run lint && npm --prefix frontend run typecheck && npm --prefix frontend run test && npm --prefix frontend run build && npm --prefix frontend run build:demo && npm --prefix frontend run a11y`.
-- [ ] **Step 5: Commit** `git commit -m "Sign in with Firebase email/password; the session cookie carries the token to the stream (D6, D7)"`.
+- [ ] **Step 5: Commit** `git commit -m "Sign in with Firebase email/password; the session cookie carries the token to the stream (FD6, FD7)"`.
 
 ---
 
@@ -851,5 +851,5 @@ gcloud run services update caos --region $REGION --update-env-vars CAOS_PUBLIC_O
 ## Self-review
 
 - Spec §2 R1–R8: R1 by Task 0 (fork of `caos-databricks`); R2 by Tasks 4–5 (no Hosting); R3 by Task 5 flags; R4 by Task 1; R5 by Tasks 2–3; R6, R7 by Task 5; R8 n/a.
-- §4.3 detail changed in planning: the session cookie is accepted on every method, not only `GET`. The edge already refuses a cross-site unsafe request (Origin and `Sec-Fetch-Site`, `CAOS_PUBLIC_ORIGIN` required in firebase mode) and the cookie is `SameSite=Strict`, so the frontend needs no fetch changes. Recorded in D6 when Task 2 lands.
+- §4.3 detail changed in planning: the session cookie is accepted on every method, not only `GET`. The edge already refuses a cross-site unsafe request (Origin and `Sec-Fetch-Site`, `CAOS_PUBLIC_ORIGIN` required in firebase mode) and the cookie is `SameSite=Strict`, so the frontend needs no fetch changes. Recorded in FD6 when Task 2 lands.
 - Names: `FIREBASE_ENV`, `ROLE_MAP_ENV`, `SESSION_COOKIE`, `FIREBASE_CSP`, `reasoning_effort()`, `EFFORTS` are used consistently across Tasks 1–5.

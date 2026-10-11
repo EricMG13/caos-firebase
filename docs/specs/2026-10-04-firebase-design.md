@@ -95,7 +95,7 @@ without `CAOS_PUBLIC_ORIGIN` and `CAOS_ROLE_MAP`.
   (`identitytoolkit.googleapis.com`, `securetoken.googleapis.com`). The owner creates
   the accounts in the Firebase console: one ANALYST (the owner), READER logins for
   viewers. Google sign-in is a later change with its own policy review.
-- **Frontend.** `firebase` (modular `app` + `auth` only; a new dependency, D7) with
+- **Frontend.** `firebase` (modular `app` + `auth` only; a new dependency, FD7) with
   `initializeAuth(app, {persistence: indexedDBLocalPersistence})` and no popup
   resolver, so no third-party script or frame loads. A sign-in screen gates the
   workspace; `onIdTokenChanged` refreshes the bearer token and the `__session` cookie
