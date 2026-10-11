@@ -45,6 +45,14 @@ fork's `@firebase/app` and `@firebase/auth` pins with `--ignore-scripts`, run
 `npm --prefix frontend audit fix --package-lock-only --ignore-scripts` if audit flags
 anything, then `npm --prefix frontend audit --omit=dev` must exit 0.
 
+The weekly `upstream-sync` workflow (`.github/workflows/upstream-sync.yml`, Monday
+06:00 UTC, or run it by hand) does the merge step: it opens a `sync/<date>` PR to `main`,
+or, when the merge conflicts, an issue "Upstream sync conflict <date>" listing the files
+(resolve locally by the rule above). Set the repository secret `SYNC_TOKEN` (a
+fine-grained PAT with contents and pull requests write on this repo) so the PR triggers
+CI; without it the workflow uses `GITHUB_TOKEN`, and GitHub starts no workflow runs for
+events that token causes, so CI must be re-run by the owner.
+
 ## Repo map (after the fork)
 
 - `caos/` — the app: `api/` (edge, identity, sections, commands, health), `store/`,
@@ -90,12 +98,26 @@ npm --prefix frontend run lint && npm --prefix frontend run typecheck && npm --p
 scripts/container_smoke.sh
 ```
 
+Run `scripts/fork_gates.sh quick` per task and `scripts/fork_gates.sh full` once per
+branch; each worktree gets its own Postgres (`scripts/worktree_postgres.sh`), so parallel
+checkouts never share the compose database. `full` runs the commands above (frontend only
+when the diff against `origin/main` touches `frontend/`, or with `--all`); it writes one
+log per gate and a `gate exit seconds` table; `--dry-run` prints the plan.
+
 CI is upstream's `ci.yml`, unchanged, so syncs never conflict on it. Its `bundle`
 job runs against the workspace stand-in and is not a fork gate. The fork's own
 gates (container smoke, npm audit) run in `.github/workflows/fork.yml`. The `size`
 job follows FD21. `scripts/check_gate_config.py` inspects only `ci.yml`;
-`tests/test_fork_ci.py` checks that every action in fork.yml is pinned to the same
+`tests/test_fork_ci.py` checks that every action in fork.yml and upstream-sync.yml is pinned to the same
 40-hex SHA as in `ci.yml`, and fork.yml's other settings are checked by review.
+
+## Qualification (#7)
+
+Iterate on host fixes with the LITE set or a single-module set. Independent sets run in
+parallel: each `scripts/qualify.py` invocation creates its own database. Use
+`--attempts 3`. Run the FULL set (`czr-2026q2-full-credit-assessment`) only to confirm.
+The OpenRouter key comes from the Keychain item `caos-openrouter-key`, read with
+`| tr -d '[:space:]'`; spend is capped by `--ceiling`.
 
 ## Invariants (never weaken)
 
