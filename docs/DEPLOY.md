@@ -56,21 +56,33 @@ Proves: each command exits 0; `gcloud sql instances list` shows `caos-pg` RUNNAB
 
 ## 3. Secrets (owner, own terminal)
 
-gcloud logs command arguments at DEBUG into `~/.config/gcloud/logs`, so the database
-password is never an argument: the user is created without one, the password is set by
-prompt, and the same value reaches the secret on stdin. Use only letters and digits in
-the password (it sits inside a URL).
+The database password is generated once and never echoed. gcloud logs command
+arguments to `~/.config/gcloud/logs` at DEBUG, so the one command that takes the
+password as an argument runs with file logging disabled
+(`CLOUDSDK_CORE_DISABLE_FILE_LOGGING=true`). The URL secret is built with `printf` and
+read from stdin, so the password is never in argv there.
 
 ```bash
-gcloud sql users create caos --instance=caos-pg
-gcloud sql users set-password caos --instance=caos-pg --prompt-for-password   # type the password
-read -rs DBPW   # type the same password again; nothing is echoed
+DBPW=$(openssl rand -hex 24)
+CLOUDSDK_CORE_DISABLE_FILE_LOGGING=true gcloud sql users create caos --instance=caos-pg --password="$DBPW"
 printf 'postgresql://caos:%s@/caos?host=/cloudsql/%s:%s:caos-pg' "$DBPW" $PROJECT $REGION \
   | gcloud secrets create caos-database-url --data-file=-; unset DBPW
 read -rs KEY && printf %s "$KEY" | gcloud secrets create openrouter-key --data-file=-; unset KEY   # paste the key, Enter; nothing is echoed
 ```
 
 Proves: `gcloud secrets list` shows both names (it never shows a value).
+
+Recovery: if the first deploy fails its startup probe and `/api/health` reports
+`store: STORE_UNAVAILABLE`, the URL secret and the user's password disagree. Generate a
+new value and set both, then bump the pinned `caos-database-url` version in §6's
+`--set-secrets` to the new version number (`gcloud secrets versions list caos-database-url`):
+
+```bash
+DBPW=$(openssl rand -hex 24)
+CLOUDSDK_CORE_DISABLE_FILE_LOGGING=true gcloud sql users set-password caos --instance=caos-pg --password="$DBPW"
+printf 'postgresql://caos:%s@/caos?host=/cloudsql/%s:%s:caos-pg' "$DBPW" $PROJECT $REGION \
+  | gcloud secrets versions add caos-database-url --data-file=-; unset DBPW
+```
 
 ## 4. Service account permissions
 
