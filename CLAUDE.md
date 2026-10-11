@@ -87,7 +87,8 @@ scripts/container_smoke.sh
 CI is upstream's `ci.yml`, unchanged, so syncs never conflict on it. Its `bundle`
 job runs against the workspace stand-in and is not a fork gate. The fork's own
 gates (container smoke, npm audit) run in `.github/workflows/fork.yml`. The `size`
-job follows FD21.
+job follows FD21. `scripts/check_gate_config.py` inspects only `ci.yml`, so fork.yml's
+pins and settings are checked by review, not by a gate.
 
 ## Invariants (never weaken)
 

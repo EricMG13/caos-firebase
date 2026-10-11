@@ -10,7 +10,17 @@ DB=caos_container_smoke
 NAME=caos-container-smoke
 PORT=8001
 IMAGE=caos-firebase:smoke
-BASE="http://127.0.0.1:${PORT}"
+# Linux (CI): host-gateway is the docker0 IP, which a 127.0.0.1-published
+# Postgres port does not answer, so share the host network instead.
+if [ "$(uname -s)" = Linux ]; then
+  NET_ARGS=(--network host)
+  DB_HOST=127.0.0.1
+  BASE="http://127.0.0.1:8000"
+else
+  NET_ARGS=(-p "127.0.0.1:${PORT}:8000" --add-host host.docker.internal:host-gateway)
+  DB_HOST=host.docker.internal
+  BASE="http://127.0.0.1:${PORT}"
+fi
 
 db() { # $1 = SQL statement, run autocommit on the throwaway server
   ADMIN_URL="$ADMIN_URL" SQL="$1" uv run python -c '
@@ -43,9 +53,8 @@ if [ "$avail_kb" -lt $((MIN_GB * 1024 * 1024)) ]; then
 fi
 docker build -t "$IMAGE" . >/dev/null || { echo "FAIL: docker build"; exit 1; }
 
-docker run -d --name "$NAME" -p "127.0.0.1:${PORT}:8000" \
-  --add-host host.docker.internal:host-gateway \
-  -e "CAOS_DATABASE_URL=postgresql://postgres:local-test-admin-only@host.docker.internal:55437/$DB" \
+docker run -d --name "$NAME" "${NET_ARGS[@]}" \
+  -e "CAOS_DATABASE_URL=postgresql://postgres:local-test-admin-only@${DB_HOST}:55437/$DB" \
   --tmpfs /tmp/blobs:rw,uid=10001,gid=10001,mode=0700 \
   -e CAOS_BLOB_ROOT=/tmp/blobs \
   -e OPENROUTER_API_KEY=sk-or-test \
