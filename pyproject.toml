@@ -53,6 +53,9 @@ dev = [
   # Property tests on the money arithmetic (D121); pre-approved test tool.
   "hypothesis==6.167.1",
 ]
+ops = [
+    "firebase-admin>=7.7.0",
+]
 
 # Virtual project: nothing here is built or installed, so every distribution
 # uv installs is a wheel (`no-build`). The app runs as `python -m caos.serve`.

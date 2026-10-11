@@ -60,7 +60,7 @@ Later entries override earlier ones. Details live in the design spec named in ea
   applied with the Firebase CLI or MCP server (spec §5).
 - FD19 (2026-10-11) — `firebase-admin`, in a non-runtime dependency group, is used only
   by the owner-run provisioning script (H3). The alternative was the hand-written
-  Identity Toolkit REST call.
+  Identity Toolkit REST call. Resolved version: `firebase-admin` 7.7.0 (group `ops`).
 - FD20 (2026-10-11) — The shutdown drain fits Cloud Run's 10 s SIGTERM grace (H2).
 - FD21 (2026-10-11, owner) — CI's 800-line `size` check applies to fork-authored PRs.
   The re-fork PR and upstream-sync PRs are exempt and may merge with `size` red. They

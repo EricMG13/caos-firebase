@@ -221,20 +221,29 @@ patching it in place.
 
 The model price is the owner's 2026-10-03 figure; change it only on the owner's word.
 
-## 7. Verify the users' email
+## 7. Create the users, email verified
 
 Users created in the Firebase console start with `emailVerified=false`, and the server
-refuses them. The owner sets it for each owner-created user (the call carries no
-secret; the token comes from the owner's own gcloud login):
+refuses them. `scripts/firebase_users.py` creates each user with the email already
+verified through the Firebase Admin SDK (FD19). It runs on the owner's machine only
+and is not in the image. It reads the password without echo, sends it once to
+Firebase, and never prints or logs it; a refusal prints only the error's class.
+
+Firebase Auth refuses gcloud's default OAuth client for application-default
+credentials, so create a Desktop OAuth client once: in the console open APIs &
+Services > Credentials > Create credentials > OAuth client ID > Desktop app, then
+download the JSON. Keep it outside the repo, for example
+`~/.config/caos/oauth-desktop.json`, and never commit it.
 
 ```bash
-curl -sS -X POST "https://identitytoolkit.googleapis.com/v1/projects/$PROJECT/accounts:update" \
-  -H "Authorization: Bearer $(gcloud auth print-access-token)" \
-  -H "x-goog-user-project: $PROJECT" -H "Content-Type: application/json" \
-  -d '{"localId": "<uid>", "emailVerified": true}'
+gcloud auth application-default login --client-id-file=$HOME/.config/caos/oauth-desktop.json
+gcloud auth application-default set-quota-project "$PROJECT"
+uv run --group ops python scripts/firebase_users.py --project "$PROJECT" create <owner email>
+uv run --group ops python scripts/firebase_users.py --project "$PROJECT" create <viewer email>
 ```
 
-The uid is on the Authentication, Users page. Repeat per user.
+The script passes `projectId` explicitly. To verify a user created in the console, run
+`... --project "$PROJECT" verify <email>`. Every user must also be in `CAOS_ROLE_MAP`.
 
 ## 8. Smoke through the service origin
 
