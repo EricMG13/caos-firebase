@@ -15,10 +15,17 @@ Email/Password sign-in is committed config (`firebase.json`, `.firebaserc`):
 npx -y firebase-tools@latest deploy --only auth --project caos-firebase-prod
 ```
 
+The `auth` deploy target ships in firebase-tools (`lib/deploy/auth`), and Firebase's own
+firebase-auth-basics agent skill documents the `firebase.json` `auth.providers` block and
+this command; it is unverified here until the first deploy (FD18). If the CLI rejects the
+target, enable Email/Password in the console instead: Authentication > Sign-in method >
+Email/Password.
+
 The web app's public config comes from the Firebase MCP `firebase_get_sdk_config`
 (platform `web`) after `firebase_create_app` (platform `web`, display name `caos-web`).
 Its `apiKey` and `authDomain` feed `_FIREBASE_API_KEY` and `_FIREBASE_AUTH_DOMAIN` in
-`cloudbuild.yaml`.
+`cloudbuild.yaml`. The SPA authenticates every request with the `__session` cookie; it
+never sends an `Authorization` header.
 
 Console settings the config does not cover:
 
@@ -82,7 +89,7 @@ read -rs KEY && printf %s "$KEY" | gcloud secrets create openrouter-key --data-f
 printf '%s' '<owner email>=ANALYST;<viewer email>=READER' | gcloud secrets create caos-role-map --data-file=-
 ```
 
-Proves: `gcloud secrets list` shows both names (it never shows a value).
+Proves: `gcloud secrets list` shows the three names (it never shows a value).
 
 Recovery: if the first deploy fails its startup probe and `/api/health` reports
 `store: STORE_UNAVAILABLE`, the URL secret and the user's password disagree. Generate a
@@ -115,17 +122,19 @@ gcloud projects add-iam-policy-binding $PROJECT --member serviceAccount:$SA --ro
 
 ## 5. Build
 
-The web `apiKey` comes from `firebase apps:create web caos --project "$PROJECT"` then
-`firebase apps:sdkconfig web --project "$PROJECT"`.
+The web `apiKey` is the one §1 read from the Firebase MCP `firebase_get_sdk_config`.
 
 The build uploads the working directory, so it must be clean (`.gcloudignore` also keeps
 `.superpowers/` and `.gitnexus/` out of the upload):
 
 ```bash
-test -z "$(git status --porcelain)" || { echo 'working tree not clean: commit or stash first'; exit 1; }
 IMAGE=$REGION-docker.pkg.dev/$PROJECT/caos/caos:$(git rev-parse --short HEAD)
-gcloud builds submit --config cloudbuild.yaml \
-  --substitutions=_IMAGE=$IMAGE,_FIREBASE_API_KEY=<web apiKey>,_FIREBASE_AUTH_DOMAIN=$PROJECT.firebaseapp.com
+if [ -n "$(git status --porcelain)" ]; then
+  echo 'working tree not clean: commit or stash first'
+else
+  gcloud builds submit --config cloudbuild.yaml \
+    --substitutions=_IMAGE=$IMAGE,_FIREBASE_API_KEY=<web apiKey>,_FIREBASE_AUTH_DOMAIN=$PROJECT.firebaseapp.com
+fi
 ```
 
 `cloudbuild.yaml` runs the build as `caos-build` (a user-specified service account, so
@@ -166,8 +175,9 @@ Set `CAOS_PUBLIC_ORIGIN` on this first deploy from the deterministic service URL
 without it, so there is no placeholder second deploy. Requests through the legacy
 `*.a.run.app` URL get 403 ORIGIN_REFUSED on writes; always use the URL below.
 `CAOS_ROLE_MAP` is `email=ROLE;email=ROLE`; an empty entry (a trailing `;`) is
-skipped, anything else malformed refuses the boot. The `^@^` prefix
-makes `@` the env separator so the role map's `;` survives. `--allow-unauthenticated`
+skipped, anything else malformed refuses the boot; it arrives from the `caos-role-map`
+secret (FD24). The `^@^` prefix makes `@` the env separator so the commas in
+`CAOS_MODEL_PRICE` survive. `--allow-unauthenticated`
 lets the browser reach the service; sign-in is the app's own. `CAOS_RUN_CEILING=120.00`
 is set explicitly, as at the fork point (FD11): it bounds each run's reservation, and the
 OpenRouter key's own limit is the hard spend stop.
@@ -183,6 +193,7 @@ state whether either flag restarts anything beyond the new revision every deploy
 
 ```bash
 NUM=$(gcloud projects describe $PROJECT --format='value(projectNumber)')
+SA=caos-run@$PROJECT.iam.gserviceaccount.com
 ORIGIN=https://caos-$NUM.$REGION.run.app
 gcloud run deploy caos --image $IMAGE_DIGEST --region $REGION --port 8000 --no-cpu-throttling \
   --min-instances 1 --max-instances 1 --timeout 3600 --memory 2Gi --cpu 1 \
@@ -219,9 +230,11 @@ trip). Later deploys use `gcloud run services replace service.yaml --region $REG
 Both URLs serve. Use `$ORIGIN` in the browser: writes through the legacy
 `*.a.run.app` URL get 403 ORIGIN_REFUSED, and `CAOS_PUBLIC_ORIGIN` stays `$ORIGIN`.
 
-Then add the service host (`$ORIGIN` without `https://`, i.e.
+Email/password sign-in should not need the service host among Firebase's authorised
+domains (spec 2026-10-11 §5, V4; confirm on the first sign-in). Only if a sign-in is
+refused with `auth/unauthorized-domain`, add the host (`$ORIGIN` without `https://`, i.e.
 `caos-$NUM.$REGION.run.app`) under Firebase console, Authentication, Settings,
-Authorised domains, or sign-in from the service is refused.
+Authorised domains.
 
 If `/api/health` reports `blobs=BLOB_ROOT_UNAVAILABLE`, the Cloud Storage mount is not
 writable by the image's user (uid 10001). Rerun the deploy above with the volume line
@@ -359,6 +372,7 @@ rm -f "$POLICY"
 
 ```bash
 gcloud sql backups list --instance=caos-pg
+gcloud sql backups describe <backup id> --instance=caos-pg --format='value(startTime,endTime)'
 gcloud sql instances create caos-pg-drill --database-version=POSTGRES_17 --edition=ENTERPRISE \
   --cpu=1 --memory=3840MiB --region=$REGION
 gcloud sql backups restore <backup id> --restore-instance=caos-pg-drill --backup-instance=caos-pg
@@ -377,8 +391,10 @@ unset DBPW
 
 Pass criteria (none needs a production credential): schemas `caos_store` and `caos_graph`
 exist; `select count(*) from caos_store.runs;` and `... caos_store.sources;` are above 0;
-`select max(created_at) from caos_store.runs;` is no later than the backup's end time
-(`gcloud sql backups list`) and within the backup window. The owner then deletes
+`select max(created_at) from caos_store.runs;` is no later than the backup's `endTime`
+(`gcloud sql backups describe <backup id> --instance=caos-pg`) and no more than 24 h
+before it (one daily backup interval, `--backup-start-time=02:00`), unless no run was
+started in those 24 h. A later timestamp means the wrong backup was restored. The owner then deletes
 `caos-pg-drill`; deleting instances is denied to agents. Record the date and results below.
 The restore overwrites the target and restarts it; the drill target is scratch, never
 `caos-pg`. A restore to an existing instance needs it to exist first (the reference
