@@ -28,3 +28,15 @@ frontend/test-results/
 
 # Hypothesis example database (D121).
 .hypothesis/
+
+# Fork additions (caos-firebase)
+!.env.example
+*.py[cod]
+.DS_Store
+.env.*
+.firebase/
+docs/runs/
+firebase-debug.log*
+firestore-debug.log*
+node_modules/
+ui-debug.log*
