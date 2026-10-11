@@ -43,7 +43,7 @@ LOCAL_PORT = 8000
 LIMIT_CONCURRENCY = STREAM_LIMIT + 40
 # Inside the platform's grace before SIGKILL, with the drain after it.
 GRACEFUL_SECONDS = 2
-LIMIT_JOIN_SECONDS = 12
+LIMIT_JOIN_SECONDS = 6  # FD20: Cloud Run kills 10 s after SIGTERM; 2 + 6 leaves 2 s
 SERVER_LOGGER = "uvicorn.error"
 # CF-051. A conservative keep-alive: how long a connection may sit idle
 # between one response and its next request. That is the only timer uvicorn
