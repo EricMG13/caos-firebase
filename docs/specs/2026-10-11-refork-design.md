@@ -68,9 +68,10 @@ Amends `2026-10-04-firebase-design.md`; where the two differ, this file wins.
 
 ## 5. Firebase side (skills and MCP)
 
-- **Project.** The owner names an existing Firebase project or has one created
-  (`npx -y firebase-tools@latest projects:create`), on the Blaze plan. It is the same
-  Google Cloud project that runs Cloud Run.
+- **Project.** `caos-firebase-prod` (number 947232046984, display name "CAOS
+  Firebase"), created 2026-10-11 through the MCP `firebase_create_project` at the
+  owner's request. It is the same Google Cloud project that runs Cloud Run, and needs the
+  Blaze plan (the owner links billing).
 - **Committed config.** `.firebaserc` (default alias) and `firebase.json` with
   `"auth": {"providers": {"emailPassword": true}}`, applied by
   `npx -y firebase-tools@latest deploy --only auth`. No Google sign-in (FD6).
@@ -82,15 +83,27 @@ Amends `2026-10-04-firebase-design.md`; where the two differ, this file wins.
 - **Serving stays on Cloud Run through `gcloud`** (FD2). App Hosting is for Node
   full-stack frameworks (Next.js, Angular) and the backend is Python. Firebase Hosting
   stays out because of its rewrite timeout.
-- **Checks against official docs once the Firebase CLI is signed in**, using the MCP
-  `developerknowledge_search_documents`. Each result goes into FD18, or reopens the
-  decision it contradicts:
-  - V1: the Hosting-to-Cloud-Run rewrite timeout (the basis of FD2).
-  - V2: whether App Hosting can run a Python container.
-  - V3: the ID-token checks and the certificate URL that `caos/api/firebase_auth.py`
-    implements.
-  - V4: whether email/password sign-in from the Cloud Run origin needs that host in
-    Authorized domains.
+- **Checked against the official docs** on 2026-10-11 with the MCP
+  `developerknowledge_search_documents`. The results go into FD18:
+  - **V1, confirmed.** Firebase Hosting is subject to a 60-second request timeout,
+    including rewrites to Cloud Run, and answers 504 past it
+    (`firebase.google.com/docs/hosting/cloud-run`, `/docs/hosting/serverless-overview`).
+    FD2 stands. Cloud Run's own timeout goes up to 3600 s. For anything past 15 minutes,
+    Google advises that clients be able to reconnect; `EventSource` reconnects by itself.
+  - **V2, confirmed.** App Hosting builds Node.js apps only: Next.js and Angular
+    preconfigured, other frameworks through the output-bundle adapter, `nodejs22` and
+    `nodejs24` runtimes (`/docs/app-hosting/frameworks-tooling`). A Python backend is out.
+  - **V3, confirmed.** The checks in `caos/api/firebase_auth.py` match
+    `/docs/auth/admin/verify-id-tokens`: RS256; `kid` among the keys at the securetoken
+    x509 URL; `exp` in the future; `iat` and `auth_time` in the past; `aud` is the
+    project id; `iss` is `https://securetoken.google.com/<id>`; `sub` non-empty; keys
+    cached for the response's `max-age`. The module also bounds `sub` to 128 characters
+    and requires `email_verified`, which is stricter than the docs. Accounts created in
+    the console start unverified, so `docs/DEPLOY.md` §7 verifies them before first use.
+  - **V4, inferred, not stated by the docs.** Authorized domains gate OAuth operations
+    (`auth/unauthorized-domain`) and email action links. Email/password sign-in is
+    neither, so the Cloud Run host should not need adding. To be confirmed on the first
+    deployed sign-in; if refused, add the host in Authentication > Settings.
 
 ## 6. Tracking upstream (added to `CLAUDE.md`)
 
