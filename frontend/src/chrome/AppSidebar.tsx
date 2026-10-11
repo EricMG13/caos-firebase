@@ -2,7 +2,7 @@
 // state, then the section-local group; the case switcher heads it and the foot
 // carries the served role and two refused controls, all inside
 // the one landmark. At a zoomed width (400%, D63) the same sidebar is a sheet.
-import { signOut } from "firebase/auth";
+import { signOut } from "@firebase/auth";
 import { NavLink } from "react-router";
 import {
   ChartSplineIcon,

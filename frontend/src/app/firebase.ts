@@ -1,5 +1,5 @@
-import { initializeApp } from "firebase/app";
-import { type Auth, indexedDBLocalPersistence, initializeAuth } from "firebase/auth";
+import { initializeApp } from "@firebase/app";
+import { type Auth, indexedDBLocalPersistence, initializeAuth } from "@firebase/auth";
 
 const config = {
   apiKey: import.meta.env.VITE_FIREBASE_API_KEY,
@@ -8,7 +8,7 @@ const config = {
 };
 
 // No popup or redirect resolver: email/password is plain HTTPS to Google, so no
-// third-party script or frame loads and the policy keeps Trusted Types (D6).
+// third-party script or frame loads and the policy keeps Trusted Types (FD6).
 export const auth: Auth | null =
   config.apiKey && config.projectId
     ? initializeAuth(initializeApp(config), { persistence: indexedDBLocalPersistence })

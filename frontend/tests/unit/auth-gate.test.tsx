@@ -7,7 +7,7 @@ const mocks = vi.hoisted(() => ({
   listeners: [] as Listener[],
   signIn: vi.fn(),
 }));
-vi.mock("firebase/auth", () => ({
+vi.mock("@firebase/auth", () => ({
   onIdTokenChanged: (_auth: unknown, cb: Listener) => {
     mocks.listeners.push(cb);
     return () => undefined;

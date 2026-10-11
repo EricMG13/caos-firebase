@@ -3,7 +3,7 @@ import { MemoryRouter } from "react-router";
 import { describe, expect, it, vi } from "vitest";
 
 const mocks = vi.hoisted(() => ({ signOut: vi.fn(), client: {} }));
-vi.mock("firebase/auth", () => ({ signOut: (...args: unknown[]) => mocks.signOut(...args) }));
+vi.mock("@firebase/auth", () => ({ signOut: (...args: unknown[]) => mocks.signOut(...args) }));
 vi.mock("@/app/firebase", () => ({ auth: mocks.client }));
 
 import { AppSidebar } from "@/chrome/AppSidebar";

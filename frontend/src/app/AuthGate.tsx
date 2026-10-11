@@ -1,4 +1,4 @@
-import { onIdTokenChanged, signInWithEmailAndPassword, type Auth } from "firebase/auth";
+import { onIdTokenChanged, signInWithEmailAndPassword, type Auth } from "@firebase/auth";
 import { type FormEvent, type ReactNode, useEffect, useState } from "react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";

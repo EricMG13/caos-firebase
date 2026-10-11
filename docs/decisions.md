@@ -19,8 +19,11 @@ Later entries override earlier ones. Details live in the design spec named in ea
 - D6 (2026-10-04) — Identity: a `firebase` edge mode verifying Firebase ID tokens on the
   server, roles from a server-side email map, email/password sign-in so the content
   security policy keeps Trusted Types and same-origin COOP. Design §4.3.
-- D7 (2026-10-04) — Dependency `firebase` (npm, modular `app` and `auth` only) for
-  sign-in and token refresh. Alternative: hand-written calls to the Identity Toolkit
+- D7 (2026-10-04) — Dependencies `@firebase/app` and `@firebase/auth` (npm; the modular packages only
+  — the `firebase` umbrella pulls Firestore, whose `@grpc/grpc-js ~1.9` pin carries two
+  high advisories with no fixed release as of firebase 13.0.0) for sign-in and token
+  refresh. Versions: @firebase/app 0.16.3, @firebase/auth 1.13.7, chosen so
+  `npm audit --omit=dev` is clean (2026-10-11). Alternative: hand-written calls to the Identity Toolkit
   and Secure Token REST APIs, which would re-implement refresh and persistence.
 - D8 (2026-10-04) — `langchain-openai` (already locked) moves from the test group to the
   runtime: `caos.models.chat_model` is `ChatOpenAI` on OpenRouter. `CAOS_REASONING_EFFORT`
