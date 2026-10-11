@@ -1,0 +1,104 @@
+# Weekly merge of upstream's rebuild/databricks into main (FD17, FD21, FD22, FD26).
+# Opens a sync PR, or an issue when the merge conflicts. Fork-owned; ci.yml is untouched.
+name: upstream-sync
+on:
+  schedule:
+    - cron: "0 6 * * 1"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+  pull-requests: write
+  issues: write
+
+concurrency:
+  group: upstream-sync
+  cancel-in-progress: false
+
+env:
+  UPSTREAM_URL: https://github.com/EricMG13/caos-databricks.git
+  UPSTREAM_BRANCH: rebuild/databricks
+
+jobs:
+  sync:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      # SYNC_TOKEN (fine-grained PAT: contents + pull requests write on this repo) if set,
+      # else the built-in token. GitHub does not start workflow runs for events caused by
+      # the built-in token, so a PR opened with it gets no CI until it is re-run or the
+      # owner sets SYNC_TOKEN.
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: main
+          fetch-depth: 0
+          token: ${{ secrets.SYNC_TOKEN || github.token }}
+
+      - name: Fetch upstream
+        run: |
+          git remote add upstream "$UPSTREAM_URL"
+          git fetch upstream "$UPSTREAM_BRANCH"
+
+      - name: Merge, then open a PR or a conflict issue
+        env:
+          GH_TOKEN: ${{ secrets.SYNC_TOKEN || github.token }}
+          HAS_SYNC_TOKEN: ${{ secrets.SYNC_TOKEN != '' }}
+          REPO: ${{ github.repository }}
+        run: |
+          set -u
+          tip=$(git rev-parse "upstream/$UPSTREAM_BRANCH")
+          short=$(git rev-parse --short "$tip")
+          if git merge-base --is-ancestor "$tip" HEAD; then
+            echo "up to date: upstream $short is already in main"
+            exit 0
+          fi
+          date=$(date -u +%F)
+          branch="sync/$date"
+          prev=$(git merge-base HEAD "$tip")
+          git config user.name "caos-sync-bot"
+          git config user.email "caos-sync-bot@users.noreply.github.com"
+          git switch -c "$branch"
+          if ! git merge --no-ff --no-edit "upstream/$UPSTREAM_BRANCH" > "$RUNNER_TEMP/merge.log" 2>&1; then
+            files=$(git diff --name-only --diff-filter=U)
+            git merge --abort
+            cat "$RUNNER_TEMP/merge.log"
+            title="Upstream sync conflict $date"
+            {
+              echo "Merging upstream/$UPSTREAM_BRANCH ($short) into main conflicts in:"
+              echo
+              echo "$files" | sed 's/^/- `/; s/$/`/'
+              echo
+              echo "Rule (CLAUDE.md, Tracking upstream): upstream's version wins; the Firebase change"
+              echo "is re-applied on top with the smallest footprint. Merge with a merge commit,"
+              echo "never squash or rebase (FD22). Resolve locally on a \`sync/<date>\` branch,"
+              echo "run the full gate list (\`scripts/fork_gates.sh full\`), open the PR."
+              echo
+              echo "Workflow run: $GITHUB_SERVER_URL/$REPO/actions/runs/$GITHUB_RUN_ID"
+            } > "$RUNNER_TEMP/body.md"
+            existing=$(gh issue list --repo "$REPO" --state open --search "\"$title\" in:title" --json number --jq '.[0].number // empty')
+            if [ -n "$existing" ]; then
+              gh issue comment "$existing" --repo "$REPO" --body-file "$RUNNER_TEMP/body.md"
+            else
+              gh issue create --repo "$REPO" --title "$title" --body-file "$RUNNER_TEMP/body.md"
+            fi
+            exit 0
+          fi
+          git push origin "$branch"
+          if [ "$HAS_SYNC_TOKEN" = "true" ]; then
+            ci_note="Opened with SYNC_TOKEN, so CI runs on this PR."
+          else
+            ci_note="Opened with the built-in GITHUB_TOKEN: GitHub does not start workflow runs for events it causes, so CI will not run on this PR by itself. Re-run CI (close and reopen the PR, or push an empty commit as the owner) or set the SYNC_TOKEN secret (fine-grained PAT: contents and pull requests write on this repo)."
+          fi
+          {
+            echo "Merges upstream/$UPSTREAM_BRANCH at \`$short\` into main."
+            echo
+            echo "- FD22: merge commit only; never squash or rebase."
+            echo "- FD21: the \`size\` check is exempt for upstream-sync PRs; the lint step"
+            echo "  \"the suppression baseline did not rise\" applies."
+            echo "- FD17: review the fork's own changes only: \`git diff $prev..HEAD\`"
+            echo "  (previous upstream commit merged: \`$prev\`)."
+            echo
+            echo "$ci_note"
+          } > "$RUNNER_TEMP/body.md"
+          gh pr create --repo "$REPO" --base main --head "$branch" \
+            --title "Sync caos-databricks $short ($date)" --body-file "$RUNNER_TEMP/body.md"

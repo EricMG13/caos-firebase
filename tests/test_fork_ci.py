@@ -1,8 +1,8 @@
-"""The fork's own CI file pins every action as upstream's CI does (R23).
+"""The fork's own CI files pin every action as upstream's CI does (R23).
 
 `scripts/check_gate_config.py` inspects only `ci.yml`, so this fork-owned test
-holds `fork.yml` to the same pins: each `uses:` is a 40-hex commit SHA, and the
-same `action@sha` appears in `ci.yml`.
+holds every fork-owned file (`fork.yml`, `upstream-sync.yml`) to the same pins:
+each `uses:` is a 40-hex commit SHA, and the same `action@sha` appears in `ci.yml`.
 """
 
 from __future__ import annotations
@@ -11,9 +11,11 @@ import re
 from collections.abc import Iterator
 from pathlib import Path
 
+import pytest
 import yaml
 
 CI_DIR = Path(__file__).resolve().parent.parent / ".github" / "workflows"
+FORK_FILES = ("fork.yml", "upstream-sync.yml")
 PINNED = re.compile(r"^[A-Za-z0-9_.-]+/[A-Za-z0-9_./-]+@[0-9a-f]{40}$")
 
 
@@ -34,10 +36,11 @@ def _parsed(name: str) -> object:
     return yaml.safe_load((CI_DIR / name).read_text(encoding="utf-8"))
 
 
-def test_every_fork_action_is_sha_pinned_and_matches_ci() -> None:
-    fork = list(_uses(_parsed("fork.yml")))
+@pytest.mark.parametrize("name", FORK_FILES)
+def test_every_fork_action_is_sha_pinned_and_matches_ci(name: str) -> None:
+    fork = list(_uses(_parsed(name)))
     ci = set(_uses(_parsed("ci.yml")))
-    assert fork, "fork.yml names no action"
+    assert fork, f"{name} names no action"
     for action in fork:
         assert PINNED.match(action), f"{action} is not pinned to a 40-hex SHA"
         assert action in ci, f"{action} is not pinned the same way in ci.yml"
