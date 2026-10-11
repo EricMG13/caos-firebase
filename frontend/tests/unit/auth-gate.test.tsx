@@ -214,6 +214,21 @@ describe("AuthGate session upkeep", () => {
     expect(getIdToken).toHaveBeenCalledTimes(2);
   });
 
+  it("forces at most one refresh per 30 s when every new token looks near expiry", async () => {
+    // A client clock an hour fast: each fresh token seems to expire within 120 s.
+    const getIdToken = vi.fn(async () => {
+      mocks.listeners.at(-1)!(held("tok", 90_000));
+      return "tok";
+    });
+    await signedIn(getIdToken, 90_000);
+    await advance(1_000);
+    expect(getIdToken).toHaveBeenCalledTimes(1);
+    await advance(28_999);
+    expect(getIdToken).toHaveBeenCalledTimes(1);
+    await advance(1);
+    expect(getIdToken).toHaveBeenCalledTimes(2);
+  });
+
   it("asks the SDK for a token when the tab returns", async () => {
     const getIdToken = vi.fn().mockResolvedValue("tok");
     await signedIn(getIdToken, 3_600_000);

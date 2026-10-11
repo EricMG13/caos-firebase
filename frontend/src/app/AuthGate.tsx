@@ -25,11 +25,15 @@ export function AuthGate({
     if (!client) return undefined;
     let latest = 0;
     let timer: ReturnType<typeof setTimeout> | undefined;
+    // Under client clock skew every new token looks near expiry: re-arm no sooner
+    // than RETRY_MS after the last forced refresh, never at once again.
+    let forcedAt = -Infinity;
     const disarm = () => clearTimeout(timer);
     // A forced refresh fires the listener, which rewrites the cookie and re-arms.
     const arm = (ms: number, mine: number) => {
       disarm();
       timer = setTimeout(() => {
+        forcedAt = Date.now();
         client.currentUser?.getIdToken(true).catch(() => {
           if (mine === latest) arm(RETRY_MS, mine);
         });
@@ -53,7 +57,9 @@ export function AuthGate({
           if (mine !== latest) return;
           writeSessionCookie(held ? held.token : null, held?.maxAge);
           setGate(held ? "signed-in" : "signed-out");
-          if (held) arm(Math.max(0, held.maxAge - REFRESH_LEAD_S) * 1000, mine);
+          if (!held) return;
+          const due = Math.max(0, held.maxAge - REFRESH_LEAD_S) * 1000;
+          arm(Math.max(due, forcedAt + RETRY_MS - Date.now()), mine);
         });
     });
     return () => {
