@@ -51,6 +51,48 @@ Amends `2026-10-04-firebase-design.md`; where the two differ, this file wins.
    - `pyproject.toml`: merged by hand; `uv.lock` regenerated with `uv lock`, never
      hand-merged.
 
+## 3a. Hardening in the same branch (owner, 2026-10-11)
+
+These come from `docs/research/2026-10-11-firebase-features-review.md` and land on
+`refork` after the replay, each as its own commit.
+
+- **H1, runbook hardening.** Settings and docs only, in `docs/DEPLOY.md` and the deploy
+  flags:
+  - Cloud Run: `--cpu-boost`; an explicit `--concurrency` sized to `STREAM_LIMIT` plus
+    API headroom; an HTTP startup probe on `/api/health`, with no liveness probe.
+  - A dedicated `caos-run` service account, with secret-level `secretAccessor` and
+    bucket-level `objectUser` only.
+  - Secret versions pinned, not `:latest`.
+  - Cloud SQL on the Enterprise edition, dedicated core (`db-custom-1-3840`), with
+    automated backups, point-in-time recovery, `--deletion-protection` and Query
+    Insights, confirmed with `describe`.
+  - An uptime check on `/api/health`, an alerts-only billing budget, and Artifact
+    Registry scanning.
+  - "Deploy while no run is in flight": a deploy restarts the only instance.
+- **H2, shutdown inside Cloud Run's grace.** Cloud Run sends SIGKILL 10 s after SIGTERM;
+  `caos/serve.py` budgets 2 s + 12 s.
+  - Start with a test that fails on today's values. Then change `LIMIT_JOIN_SECONDS`
+    so the whole drain is at most 8 s; that is a one-line change to an upstream file.
+  - If an upstream test pins the old values, update it and record the change in FD20.
+  - No new setting.
+- **H3, user-provisioning script.** `scripts/firebase_users.py`, using
+  `firebase_admin.auth`, replaces DEPLOY.md §7's REST call.
+  - It creates a user with `email_verified=True`, or marks an existing one verified.
+  - It reads the password with `getpass` and never prints or logs it.
+  - It runs on the owner's application-default credentials.
+  - `firebase-admin` goes in a non-runtime dependency group, so it stays out of the
+    image (FD19).
+- **H4, blob writes on the bucket mount: check first, change only if the check fails.**
+  - `put` already rewrites unconditionally and `get` re-hashes, so a damaged blob
+    fails closed and is repaired by the next `put`.
+  - Writing straight to the final name would leave half-written files on local disks,
+    so that change is not made.
+  - Add an on-mount check to the post-deploy runbook: upload a filing, then read it
+    back.
+  - If the temporary file, the rename or the directory `fsync` fails on the mount, the
+    fallback is a Cloud Storage implementation of the existing `volume` protocol in
+    `caos/blobs.py` (whole-object upload). That needs its own FD record and plan.
+
 ## 4. Decision log
 
 - The fork's decisions are renamed D1–D14 → FD1–FD14 in `docs/decisions.md` and every
@@ -65,6 +107,10 @@ Amends `2026-10-04-firebase-design.md`; where the two differ, this file wins.
   Phase 2 is dropped.
 - **FD18** — Firebase-side provisioning is declared in `firebase.json` and applied with
   the Firebase CLI or MCP server (§5).
+- **FD19** — `firebase-admin`, in a non-runtime dependency group, is used only by the
+  owner-run provisioning script (H3). The alternative was the hand-written Identity
+  Toolkit REST call.
+- **FD20** — The shutdown drain fits Cloud Run's 10 s SIGTERM grace (H2).
 
 ## 5. Firebase side (skills and MCP)
 
@@ -123,6 +169,8 @@ Resolve by §3.7's rule, run the full gate list and the container smoke, open a 
 - `scripts/container_smoke.sh` passes.
 - `tests/test_firebase_auth.py`, `tests/test_edge_firebase.py` and the frontend's
   `auth-gate` and `sign-out` tests pass against B's code.
+- H2's test fails before the change and passes after it. H3's script runs `--help`
+  without credentials, and a test proves it never echoes the password.
 - A PR `refork` → `main` is opened from the terminal pane. It exceeds 800 changed lines
   because it imports upstream. The review scope is `git diff B..refork`, which must stay
   near Phase 1's own size.
@@ -137,6 +185,9 @@ only, no code). Conflict resolution and fixes go to sub-agents:
 | Identity replay (edge, `firebase_auth`, health) | `mx-precise` | `mx-adversary` |
 | Model and pricing replay (money) | `mx-precise` | `mx-adversary` |
 | Frontend sign-in, container, runbook, `firebase.json` | `mx-feature` | `mx-precise` |
+| H1 runbook hardening | `mx-scaffold` | `mx-precise` |
+| H2 shutdown budget (exactly-once path) | `mx-precise` | `mx-adversary` |
+| H3 provisioning script (handles passwords) | `mx-feature` | `mx-adversary` |
 | Whole branch | — | `mx-architect` |
 
 ## 9. Out of scope
@@ -145,6 +196,11 @@ only, no code). Conflict resolution and fixes go to sub-agents:
   Blaze billing and the OpenRouter key in Secret Manager.
 - Phase 2.
 - Google sign-in.
+- Later, separate changes from the research review, each with its own design:
+  - server-minted HttpOnly session cookies;
+  - JSON logs with trace ids;
+  - a TOTP second factor;
+  - the query feature and its `issuer_facts` read model.
 
 ## 10. Risks
 
