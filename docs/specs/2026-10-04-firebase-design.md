@@ -73,7 +73,9 @@ without `CAOS_PUBLIC_ORIGIN` and `CAOS_ROLE_MAP`.
   `__session` cookie (`SameSite=Strict`), on every method, so `EventSource` and every
   existing `fetch` work unchanged. Cross-site unsafe requests are already refused by
   the Origin and `Sec-Fetch-Site` checks, which stay as they are, with
-  `CAOS_PUBLIC_ORIGIN` required in this mode.
+  `CAOS_PUBLIC_ORIGIN` required in this mode. *Amended 2026-10-11:* the SPA
+  authenticates every request with the `__session` cookie; it never sends an
+  `Authorization` header.
 - **Verification** (`pyjwt` + `cryptography`, both already locked): RS256 only; `kid`
   among Google's certificates at
   `https://www.googleapis.com/robot/v1/metadata/x509/securetoken@system.gserviceaccount.com`,
@@ -129,6 +131,11 @@ instance, database and role; the bucket; the two secrets; then
 (the three model values exactly as at the fork point).
 `CAOS_PUBLIC_ORIGIN` is the service URL, set on a second deploy once known. The
 service URL is added to Firebase Auth's authorised domains.
+
+*Superseded 2026-10-11 (FD24):* the deploy command and secrets are as in
+`docs/DEPLOY.md` §6: three secrets, `CAOS_ROLE_MAP` from Secret Manager secret
+`caos-role-map` rather than a plain env var, and every secret version pinned (`:1`),
+never `:latest` (H1).
 
 ## 5. Verification
 

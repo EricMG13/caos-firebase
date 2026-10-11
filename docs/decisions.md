@@ -57,11 +57,17 @@ Later entries override earlier ones. Details live in the design spec named in ea
 - FD17 (2026-10-11) — The fork tracks upstream by merges (spec §6); the Databricks code
   stays inert; Phase 2 is dropped.
 - FD18 (2026-10-11) — Firebase-side provisioning is declared in `firebase.json` and
-  applied with the Firebase CLI or MCP server (spec §5).
+  applied with the Firebase CLI or MCP server (spec §5). The CLI's `deploy --only auth`
+  target is unverified until the first deploy; `docs/DEPLOY.md` §1 gives the console
+  fallback.
 - FD19 (2026-10-11) — `firebase-admin`, in a non-runtime dependency group, is used only
   by the owner-run provisioning script (H3). The alternative was the hand-written
   Identity Toolkit REST call. Resolved version: `firebase-admin` 7.7.0 (group `ops`).
-- FD20 (2026-10-11) — The shutdown drain fits Cloud Run's 10 s SIGTERM grace (H2).
+- FD20 (2026-10-11) — The shutdown drain fits Cloud Run's 10 s SIGTERM grace (H2):
+  `GRACEFUL_SECONDS` 2 s plus `LIMIT_JOIN_SECONDS` 6 s is at most 8 s (measured worst
+  case 8.2–8.8 s, under 10 s). Trade-off: a node still in flight after 6 s is abandoned
+  with its reservation held and reclaimed after the 900 s lease, in exchange for an
+  orderly, logged exit.
 - FD21 (2026-10-11, owner) — CI's 800-line `size` check applies to fork-authored PRs.
   The re-fork PR and upstream-sync PRs are exempt and may merge with `size` red. They
   are reviewed on the fork's own changes: `git diff <upstream commit merged>..HEAD`.
@@ -74,3 +80,7 @@ Later entries override earlier ones. Details live in the design spec named in ea
   `prompt_cache_options: {mode: explicit}` (F545): automatic prompt caching wrote the
   prompt on almost every call and was rarely read back, so the ledger understated the
   bill (N152); invariant 8 needs the request to match the price pin.
+- FD24 (2026-10-11) — `CAOS_ROLE_MAP` is delivered from Secret Manager secret
+  `caos-role-map`, pinned by version, because the repository and the exported
+  `service.yaml` are public and the map lists real emails; app code unchanged (it
+  arrives as the same environment variable). `docs/DEPLOY.md` §3, §6.

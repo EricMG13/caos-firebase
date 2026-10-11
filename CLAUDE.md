@@ -14,14 +14,15 @@ The build contract is `docs/specs/2026-10-04-firebase-design.md`; decisions are
 ## Status
 
 - **Re-forked** at upstream `rebuild/databricks` d07fea550d33c42ece390aad970d7ca994b9c406
-  with upstream history kept (FD15), on branch `refork`.
+  with upstream history kept (FD15).
 - **Phase 1 replayed:** OpenRouter model provider (FD8, FD16), Firebase edge mode (FD6,
   FD10, FD12, FD14), frontend sign-in (FD7, FD13), Dockerfile, `cloudbuild.yaml`,
   `scripts/container_smoke.sh`, `docs/DEPLOY.md` (FD11). Databricks code stays in the
   tree, inert. Deploy follows `docs/DEPLOY.md`; the container smoke must pass first.
-- **Hardening H1-H5 lands on this branch in later commits:** runbook hardening (H1),
-  shutdown inside Cloud Run's grace (H2, FD20), user-provisioning script (H3, FD19),
-  blob-write check on the mount (H4), Architecture Center items A1-A5 and A7 (H5).
+- **Hardening H1-H5 landed** (2026-10-11; c274288, d3b8e26, 97599fe, 4ff3067,
+  02181a7): runbook hardening (H1), shutdown inside Cloud Run's grace (H2, FD20),
+  user-provisioning script (H3, FD19), blob-write check on the mount (H4), Architecture
+  Center items A1-A5 and A7 (H5).
 - **Phase 2 is dropped** (FD17): the Databricks code is not deleted, so upstream merges
   stay clean.
 - **Firebase project:** `caos-firebase-prod`.
@@ -37,7 +38,12 @@ git merge upstream/rebuild/databricks
 Rule: upstream's version wins; the Firebase change is re-applied on top with the
 smallest footprint. Run the full gate list and the container smoke, then open a PR to
 `main` from the terminal pane; the owner merges. Merge with a merge commit; never squash
-or rebase (FD22). `size` follows FD21.
+or rebase (FD22). `size` follows FD21. Cadence is the owner's.
+
+`frontend/package-lock.json` is never hand-merged: take upstream's lock, reinstall the
+fork's `@firebase/app` and `@firebase/auth` pins with `--ignore-scripts`, run
+`npm --prefix frontend audit fix --package-lock-only --ignore-scripts` if audit flags
+anything, then `npm --prefix frontend audit --omit=dev` must exit 0.
 
 ## Repo map (after the fork)
 
@@ -87,8 +93,9 @@ scripts/container_smoke.sh
 CI is upstream's `ci.yml`, unchanged, so syncs never conflict on it. Its `bundle`
 job runs against the workspace stand-in and is not a fork gate. The fork's own
 gates (container smoke, npm audit) run in `.github/workflows/fork.yml`. The `size`
-job follows FD21. `scripts/check_gate_config.py` inspects only `ci.yml`, so fork.yml's
-pins and settings are checked by review, not by a gate.
+job follows FD21. `scripts/check_gate_config.py` inspects only `ci.yml`;
+`tests/test_fork_ci.py` checks that every action in fork.yml is pinned to the same
+40-hex SHA as in `ci.yml`, and fork.yml's other settings are checked by review.
 
 ## Invariants (never weaken)
 
