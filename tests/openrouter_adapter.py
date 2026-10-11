@@ -74,6 +74,9 @@ from openai import APIError
 from openai._streaming import ServerSentEvent, SSEBytesDecoder
 from pydantic import SecretStr
 
+# Caching off (F545): explicit mode, no breakpoint, so no call pays a write;
+# one literal, shared with production's request (D23).
+from caos.models import CACHE_OFF as CACHE_OFF
 from caos.provider import MAX_COMPLETION_TOKENS, TIMEOUT_SECONDS
 
 # The seam's own class since D118: the host, not this adapter, decides
@@ -113,10 +116,6 @@ def provider_order_from_environment() -> tuple[str, ...]:
     """The pinned provider names or endpoint tags, in order; empty when unpinned."""
     listed = os.environ.get(PROVIDER_ENV, "").split(",")
     return tuple(name.strip() for name in listed if name.strip())
-
-
-# Caching off (F545): explicit mode, no breakpoint, so no call pays a write.
-CACHE_OFF: dict[str, object] = {"prompt_cache_options": {"mode": "explicit"}}
 
 
 def extra_body_from_environment() -> dict[str, object]:

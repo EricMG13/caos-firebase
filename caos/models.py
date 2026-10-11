@@ -78,6 +78,9 @@ PROVIDER_ORDER_ENV = "CAOS_PROVIDER_ORDER"
 # https, or plain http to this machine alone (a local stand-in).
 MODEL_BASE_URL_ENV = "CAOS_MODEL_BASE_URL"
 LOOPBACK_HOSTS = frozenset(("localhost", "127.0.0.1", "::1"))
+# Caching off on every OpenRouter request (F545, D23): explicit mode with no
+# breakpoint writes nothing, so the bill matches the price pin (invariant 8).
+CACHE_OFF: dict[str, object] = {"prompt_cache_options": {"mode": "explicit"}}
 HOST_MINTED = "host-"
 # A 429 reached no model, so it is asked again under the same reservation
 # (DP-5): this many tries in all, waiting `Retry-After` up to the cap.
@@ -163,7 +166,7 @@ def chat_model(*, endpoint: str | None = None) -> BaseChatModel:
     base_url = model_base_url()
     from langchain_openai import ChatOpenAI
 
-    body: dict[str, object] = {}
+    body: dict[str, object] = {**CACHE_OFF}
     effort = reasoning_effort()
     if effort:
         body["reasoning"] = {"effort": effort}
@@ -179,7 +182,7 @@ def chat_model(*, endpoint: str | None = None) -> BaseChatModel:
         max_completion_tokens=MAX_COMPLETION_TOKENS,
         timeout=TIMEOUT_SECONDS,
         max_retries=0,
-        extra_body=body or None,
+        extra_body=body,
     )
 
 

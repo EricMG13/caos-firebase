@@ -201,7 +201,8 @@ def test_the_chat_model_is_openrouter_with_the_deadline_and_no_retry(
     assert chat.max_retries == 0
     assert chat.request_timeout == TIMEOUT_SECONDS
     assert chat.max_tokens == MAX_COMPLETION_TOKENS
-    assert chat.extra_body is None
+    # Caching off on every request, set or not (F545, D23).
+    assert chat.extra_body == {"prompt_cache_options": {"mode": "explicit"}}
     other = chat_model(endpoint="other")
     assert isinstance(other, ChatOpenAI)
     assert other.model_name == "other"
@@ -218,6 +219,7 @@ def test_the_chat_model_sends_the_effort_and_the_provider_pin(
     chat = chat_model(endpoint="openai/gpt-6-luna")
     assert isinstance(chat, ChatOpenAI)
     assert chat.extra_body == {
+        "prompt_cache_options": {"mode": "explicit"},
         "reasoning": {"effort": "high"},
         "provider": {"order": ["openai"], "allow_fallbacks": False},
     }
@@ -339,6 +341,7 @@ def test_a_worker_run_names_the_effort_and_pin_it_sends(
     )
     assert isinstance(provider.chat, ChatOpenAI)
     assert provider.chat.extra_body == {
+        "prompt_cache_options": {"mode": "explicit"},
         "reasoning": {"effort": "high"},
         "provider": {"order": ["openai"], "allow_fallbacks": False},
     }
