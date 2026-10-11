@@ -2,10 +2,20 @@
 
 from __future__ import annotations
 
+import getpass
+import inspect
+
 import firebase_users
 import pytest
 
 SECRET = "correct-horse-battery-staple"
+ONE_INIT = [("init", {"options": {"projectId": "p"}})]
+
+
+def _inits(
+    calls: list[tuple[str, dict[str, object]]],
+) -> list[tuple[str, dict[str, object]]]:
+    return [call for call in calls if call[0] == "init"]
 
 
 class _User:
@@ -55,6 +65,7 @@ def test_create_makes_a_verified_user_and_never_prints_the_password(
         {"email": "a@example.com", "password": SECRET, "email_verified": True},
     ) in calls
     assert SECRET not in out.out + out.err
+    assert _inits(calls) == ONE_INIT
 
 
 def test_create_refuses_a_mismatched_confirmation(
@@ -67,12 +78,19 @@ def test_create_refuses_a_mismatched_confirmation(
     )
     assert code == 1
     assert not [call for call in calls if call[0] == "create"]
-    assert SECRET not in capsys.readouterr().err
+    out = capsys.readouterr()
+    assert SECRET not in out.out + out.err
 
 
 def test_verify_marks_an_existing_user(calls: Calls) -> None:
     assert firebase_users.main(["--project", "p", "verify", "b@example.com"]) == 0
     assert ("update", {"uid": "u2", "email_verified": True}) in calls
+    assert _inits(calls) == ONE_INIT
+
+
+def test_password_is_read_without_echo_by_default() -> None:
+    default = inspect.signature(firebase_users.main).parameters["read_password"].default
+    assert default is getpass.getpass
 
 
 def test_refusal_prints_only_the_error_class(

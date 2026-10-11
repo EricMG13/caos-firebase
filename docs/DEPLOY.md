@@ -26,7 +26,8 @@ Console settings the config does not cover:
   owner-created users exist.
 - Do NOT enable reCAPTCHA or email-enumeration protection: they load third-party
   scripts the app's CSP blocks.
-- Add the users (owner ANALYST, viewers READER) under Authentication, Users.
+- Do not add users in the console: they start with emailVerified=false. Section 7's
+  script creates them verified (`create`), or fixes one already made (`verify`).
 
 ## 2. Project, APIs, registry, database, bucket
 
@@ -259,7 +260,9 @@ uv run --group ops python scripts/firebase_users.py --project "$PROJECT" create 
 ```
 
 The script passes `projectId` explicitly. To verify a user created in the console, run
-`... --project "$PROJECT" verify <email>`. Every user must also be in `CAOS_ROLE_MAP`.
+`... --project "$PROJECT" verify <email>`. Every user must also be in the
+`caos-role-map` secret; to add one, add a new secret version (from stdin, placeholders
+only) and bump the pinned version in section 6's `--set-secrets`.
 
 ## 8. Smoke through the service origin
 
