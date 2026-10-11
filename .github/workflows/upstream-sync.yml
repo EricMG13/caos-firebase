@@ -24,10 +24,12 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 15
     steps:
-      # SYNC_TOKEN (fine-grained PAT: contents + pull requests write on this repo) if set,
-      # else the built-in token. GitHub does not start workflow runs for events caused by
-      # the built-in token, so a PR opened with it gets no CI until it is re-run or the
-      # owner sets SYNC_TOKEN.
+      # SYNC_TOKEN (fine-grained PAT: contents + pull requests + issues write on this
+      # repo, WITHOUT the Workflows permission) if set, else the built-in token. Without
+      # Workflows, neither token can push a change to .github/workflows, which is the
+      # point: a pushed upstream `on: push` workflow could otherwise run with
+      # secrets. GitHub starts no workflow runs for events caused by the built-in token,
+      # so a PR opened with it gets no CI until it is re-run or SYNC_TOKEN is set.
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           ref: main
@@ -54,40 +56,56 @@ jobs:
           fi
           date=$(date -u +%F)
           branch="sync/$date"
-          prev=$(git merge-base HEAD "$tip")
-          git config user.name "caos-sync-bot"
-          git config user.email "caos-sync-bot@users.noreply.github.com"
-          git switch -c "$branch"
-          if ! git merge --no-ff --no-edit "upstream/$UPSTREAM_BRANCH" > "$RUNNER_TEMP/merge.log" 2>&1; then
-            files=$(git diff --name-only --diff-filter=U)
-            git merge --abort
-            cat "$RUNNER_TEMP/merge.log"
+          body="$RUNNER_TEMP/body.md"
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+
+          report_issue() {  # reason, file list
             title="Upstream sync conflict $date"
             {
-              echo "Merging upstream/$UPSTREAM_BRANCH ($short) into main conflicts in:"
+              echo "$1"
               echo
-              echo "$files" | sed 's/^/- `/; s/$/`/'
+              echo "upstream/$UPSTREAM_BRANCH is at \`$short\`. Files:"
+              echo
+              echo "$2" | sed 's/^/- `/; s/$/`/'
               echo
               echo "Rule (CLAUDE.md, Tracking upstream): upstream's version wins; the Firebase change"
               echo "is re-applied on top with the smallest footprint. Merge with a merge commit,"
-              echo "never squash or rebase (FD22). Resolve locally on a \`sync/<date>\` branch,"
+              echo "never squash or rebase (FD22). Sync by hand on a \`sync/<date>\` branch,"
               echo "run the full gate list (\`scripts/fork_gates.sh full\`), open the PR."
               echo
               echo "Workflow run: $GITHUB_SERVER_URL/$REPO/actions/runs/$GITHUB_RUN_ID"
-            } > "$RUNNER_TEMP/body.md"
+            } > "$body"
             existing=$(gh issue list --repo "$REPO" --state open --search "\"$title\" in:title" --json number --jq '.[0].number // empty')
             if [ -n "$existing" ]; then
-              gh issue comment "$existing" --repo "$REPO" --body-file "$RUNNER_TEMP/body.md"
+              gh issue comment "$existing" --repo "$REPO" --body-file "$body"
             else
-              gh issue create --repo "$REPO" --title "$title" --body-file "$RUNNER_TEMP/body.md"
+              gh issue create --repo "$REPO" --title "$title" --body-file "$body"
             fi
+          }
+
+          git switch -c "$branch"
+          if ! git merge --no-ff --no-edit "upstream/$UPSTREAM_BRANCH" > "$RUNNER_TEMP/merge.log" 2>&1; then
+            cat "$RUNNER_TEMP/merge.log"
+            files=$(git diff --name-only --diff-filter=U)
+            if [ -z "$files" ]; then
+              echo "merge failed without conflicted files; see the log above" >&2
+              exit 1
+            fi
+            git merge --abort
+            report_issue "Merging upstream conflicts in:" "$files"
+            exit 0
+          fi
+          wf=$(git diff --name-only HEAD^1 HEAD -- .github/workflows)
+          if [ -n "$wf" ]; then
+            report_issue "upstream changed workflow files; sync by hand per CLAUDE.md (no token here may push workflow changes):" "$wf"
             exit 0
           fi
           git push origin "$branch"
           if [ "$HAS_SYNC_TOKEN" = "true" ]; then
             ci_note="Opened with SYNC_TOKEN, so CI runs on this PR."
           else
-            ci_note="Opened with the built-in GITHUB_TOKEN: GitHub does not start workflow runs for events it causes, so CI will not run on this PR by itself. Re-run CI (close and reopen the PR, or push an empty commit as the owner) or set the SYNC_TOKEN secret (fine-grained PAT: contents and pull requests write on this repo)."
+            ci_note="Opened with the built-in GITHUB_TOKEN: GitHub does not start workflow runs for events it causes, so CI will not run on this PR by itself. Re-run CI (close and reopen the PR, or push an empty commit as the owner) or set the SYNC_TOKEN secret (fine-grained PAT: contents, pull requests and issues write on this repo; not Workflows)."
           fi
           {
             echo "Merges upstream/$UPSTREAM_BRANCH at \`$short\` into main."
@@ -95,10 +113,10 @@ jobs:
             echo "- FD22: merge commit only; never squash or rebase."
             echo "- FD21: the \`size\` check is exempt for upstream-sync PRs; the lint step"
             echo "  \"the suppression baseline did not rise\" applies."
-            echo "- FD17: review the fork's own changes only: \`git diff $prev..HEAD\`"
-            echo "  (previous upstream commit merged: \`$prev\`)."
+            echo "- FD17: review the fork's own changes only: \`git diff $tip..HEAD\`"
+            echo "  (\`$tip\` is the upstream tip merged)."
             echo
             echo "$ci_note"
-          } > "$RUNNER_TEMP/body.md"
+          } > "$body"
           gh pr create --repo "$REPO" --base main --head "$branch" \
-            --title "Sync caos-databricks $short ($date)" --body-file "$RUNNER_TEMP/body.md"
+            --title "Sync caos-databricks $short ($date)" --body-file "$body"

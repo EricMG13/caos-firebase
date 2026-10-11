@@ -48,10 +48,13 @@ anything, then `npm --prefix frontend audit --omit=dev` must exit 0.
 The weekly `upstream-sync` workflow (`.github/workflows/upstream-sync.yml`, Monday
 06:00 UTC, or run it by hand) does the merge step: it opens a `sync/<date>` PR to `main`,
 or, when the merge conflicts, an issue "Upstream sync conflict <date>" listing the files
-(resolve locally by the rule above). Set the repository secret `SYNC_TOKEN` (a
-fine-grained PAT with contents and pull requests write on this repo) so the PR triggers
-CI; without it the workflow uses `GITHUB_TOKEN`, and GitHub starts no workflow runs for
-events that token causes, so CI must be re-run by the owner.
+(resolve locally by the rule above). When upstream changed `.github/workflows/*` the
+workflow also opens the issue instead of pushing: no token it has may push workflow
+changes. Set the repository secret `SYNC_TOKEN` (a fine-grained PAT with contents, pull
+requests and issues write on this repo, and explicitly WITHOUT the Workflows permission:
+with it, a pushed upstream `on: push` workflow could run with the repo's secrets) so the
+PR triggers CI; without it the workflow uses `GITHUB_TOKEN`, and GitHub starts no
+workflow runs for events that token causes, so CI must be re-run by the owner.
 
 ## Repo map (after the fork)
 
@@ -99,10 +102,14 @@ scripts/container_smoke.sh
 ```
 
 Run `scripts/fork_gates.sh quick` per task and `scripts/fork_gates.sh full` once per
-branch; each worktree gets its own Postgres (`scripts/worktree_postgres.sh`), so parallel
-checkouts never share the compose database. `full` runs the commands above (frontend only
-when the diff against `origin/main` touches `frontend/`, or with `--all`); it writes one
-log per gate and a `gate exit seconds` table; `--dry-run` prints the plan.
+branch; each worktree gets its own Postgres (`scripts/worktree_postgres.sh`) for pytest and
+postgres-races, so parallel checkouts do not share a test database. The container smoke
+(compose test-postgres on :55437, port 8001) and the vite-preview gates (:4173) use shared
+resources, so `full` serializes them across checkouts with a lock under `$TMPDIR`. `full`
+runs the commands above (it brings up compose `test-postgres` before the smoke; frontend
+only when the diff against `origin/main`, including uncommitted changes, touches
+`frontend/`, or with `--all`; a failed diff runs the frontend gates); it writes one log
+per gate and a `gate exit seconds` table; `--dry-run` prints the plan.
 
 CI is upstream's `ci.yml`, unchanged, so syncs never conflict on it. Its `bundle`
 job runs against the workspace stand-in and is not a fork gate. The fork's own

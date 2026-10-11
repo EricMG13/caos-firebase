@@ -10,6 +10,9 @@
 #         checkout's own Postgres (scripts/worktree_postgres.sh), never the shared one.
 # quick : ruff on the changed files, mypy, the tests that reference a changed module,
 #         and the frontend lint/typecheck/vitest when frontend/src changed.
+# Shared resources: the container smoke (compose test-postgres :55437, port 8001) and the
+# vite-preview gates (:4173) are serialized across checkouts by a mkdir lock under
+# $TMPDIR (FORK_LOCK_TIMEOUT seconds, default 3600). Ctrl-C kills the running gates.
 # --dry-run prints the plan (phases, parallel chains, commands) and runs nothing.
 # Gate output goes to log files (a shell wrapper can rewrite pytest's stdout); read the
 # exit codes from the table. macOS bash 3.2 compatible.
@@ -23,7 +26,7 @@ LOG=""
 # Upstream gate-config baseline commit (CLAUDE.md "$B"); override with FORK_GATE_B.
 GATE_B="${FORK_GATE_B:-d07fea550d33c42ece390aad970d7ca994b9c406}"
 
-usage() { sed -n '2,15p' "$0" | sed 's/^# \{0,1\}//' >&2; exit 2; }
+usage() { sed -n '2,19p' "$0" | sed 's/^# \{0,1\}//' >&2; exit 2; }
 
 while [ $# -gt 0 ]; do
   case "$1" in
@@ -56,19 +59,31 @@ changed_files() {
   done
 }
 
+# Same set as changed_files (committed vs base, uncommitted, untracked) but a failing
+# git diff fails the function instead of yielding an empty set.
+changed_files_strict() {
+  local a b c
+  a=$(git diff --name-only "$BASE...HEAD") || return 1
+  b=$(git diff --name-only HEAD) || return 1
+  c=$(git ls-files --others --exclude-standard) || return 1
+  printf '%s\n%s\n%s\n' "$a" "$b" "$c" | sort -u
+}
+
 quoted() { local out="" f; for f in "$@"; do out="$out $(printf '%q' "$f")"; done; echo "$out"; }
 
 # --- plans -------------------------------------------------------------------------
 
 plan_full() {
-  local fe=0
+  local fe=0 files
   if [ "$ALL" -eq 1 ]; then
     fe=1
-  elif have_base; then
-    git diff --name-only "$BASE...HEAD" | grep -q '^frontend/' && fe=1
-  else
-    echo "fork_gates: base $BASE not found; running the frontend gates to be safe" >&2
+  elif ! files=$(changed_files_strict); then
+    echo "fork_gates: cannot diff against $BASE; running the frontend gates (fail closed)" >&2
     fe=1
+  elif echo "$files" | grep -q '^frontend/'; then
+    fe=1
+  else
+    echo "frontend gates skipped (no change under frontend/ vs $BASE); CI runs them"
   fi
   FE=$fe
   # shellcheck disable=SC2016  # expanded later by bash -c
@@ -101,16 +116,20 @@ plan_full() {
     add 1 fe-a fe-lint "npm --prefix frontend run lint"
     add 1 fe-a fe-typecheck "npm --prefix frontend run typecheck"
     add 1 fe-a fe-test "npm --prefix frontend run test"
-    # build, a11y and the workbench share vite preview's fixed port 4173: one chain.
-    add 1 fe-b fe-build "npm --prefix frontend run build"
-    add 1 fe-b fe-build-demo "npm --prefix frontend run build:demo"
-    add 1 fe-b fe-a11y "npm --prefix frontend run a11y"
-    add 1 fe-b fe-workbench "npm --prefix frontend run test:workbench"
+    # build empties frontend/dist, which the py chain's platform-boot tests read, and
+    # a11y and the workbench share vite preview's fixed port 4173 across checkouts:
+    # a phase of its own, after the py chain, under the shared-resource lock.
+    add 2 fe-b fe-build "npm --prefix frontend run build"
+    add 2 fe-b fe-build-demo "npm --prefix frontend run build:demo"
+    add 2 fe-b fe-a11y "npm --prefix frontend run a11y"
+    add 2 fe-b fe-workbench "npm --prefix frontend run test:workbench"
   fi
   # pre-commit may rewrite files and re-run the linters: after the parallel batch.
-  add 2 precommit pre-commit "uv run pre-commit run --all-files"
-  # The smoke measures Docker's disk itself (needs >= 5 GB free) and builds an image.
-  add 3 smoke container-smoke "scripts/container_smoke.sh; rc=\$?; docker image rm caos-firebase:smoke >/dev/null 2>&1; exit \$rc"
+  add 3 precommit pre-commit "uv run pre-commit run --all-files"
+  # The smoke hardcodes the compose test-postgres (127.0.0.1:55437), a container name and
+  # port 8001, so it needs compose up and the shared-resource lock. It measures Docker's
+  # disk itself (needs >= 5 GB free) and builds an image.
+  add 4 smoke container-smoke "docker compose up -d --wait test-postgres && scripts/container_smoke.sh; rc=\$?; docker image rm caos-firebase:smoke >/dev/null 2>&1; exit \$rc"
 }
 
 plan_quick() {
@@ -187,9 +206,54 @@ run_chain() {  # phase chain
   done
 }
 
+LOCK_DIR="${TMPDIR:-/tmp}/caos-fork-gates-shared.lock"
+LOCK_HELD=0
+LOCK_TIMEOUT="${FORK_LOCK_TIMEOUT:-3600}"
+LOCKED_PHASES=" 2 4 "  # fe-b (vite preview :4173) and the container smoke (:8001, compose :55437)
+CHAIN_PIDS=""
+
+acquire_lock() {
+  local waited=0 owner
+  while ! mkdir "$LOCK_DIR" 2>/dev/null; do
+    owner=$(cat "$LOCK_DIR/pid" 2>/dev/null)
+    if [ -n "$owner" ] && ! kill -0 "$owner" 2>/dev/null; then
+      echo "fork_gates: removing stale lock of dead pid $owner" >&2
+      rm -rf "${LOCK_DIR:?}"
+      continue
+    fi
+    if [ "$waited" -ge "$LOCK_TIMEOUT" ]; then
+      echo "fork_gates: waited ${LOCK_TIMEOUT}s for $LOCK_DIR (held by pid ${owner:-?}); giving up" >&2
+      return 1
+    fi
+    [ $((waited % 60)) -eq 0 ] && echo "fork_gates: waiting for the shared-resource lock held by pid ${owner:-?} (another checkout's smoke or preview run)" >&2
+    sleep 5
+    waited=$((waited + 5))
+  done
+  echo $$ > "$LOCK_DIR/pid"
+  LOCK_HELD=1
+}
+
+release_lock() {
+  if [ "$LOCK_HELD" -eq 1 ]; then rm -rf "${LOCK_DIR:?}"; LOCK_HELD=0; fi
+}
+
+kill_tree() {
+  local child
+  for child in $(pgrep -P "$1" 2>/dev/null); do kill_tree "$child"; done
+  kill "$1" 2>/dev/null
+}
+
+cleanup() {
+  local p
+  for p in $CHAIN_PIDS; do kill_tree "$p"; done
+  CHAIN_PIDS=""
+  release_lock
+  if [ "$STOP_DB" -eq 1 ]; then scripts/worktree_postgres.sh stop >/dev/null 2>&1; fi
+}
+
 run_plan() {
   local e phase chain rest ph chains pids c
-  for ph in 0 1 2 3; do
+  for ph in 0 1 2 3 4; do
     chains=" "
     for e in "${PLAN[@]}"; do
       phase=${e%%|*}; rest=${e#*|}; chain=${rest%%|*}
@@ -197,13 +261,19 @@ run_plan() {
       case "$chains" in *" $chain "*) ;; *) chains="$chains$chain " ;; esac
     done
     [ "$chains" = " " ] && continue
+    case "$LOCKED_PHASES" in
+      *" $ph "*) acquire_lock || { echo "lock timeout" > "$LOG/lock.err"; return 1; } ;;
+    esac
     pids=""
     for c in $chains; do
       run_chain "$ph" "$c" &
       pids="$pids $!"
     done
+    CHAIN_PIDS="$pids"
     # shellcheck disable=SC2086
     wait $pids
+    CHAIN_PIDS=""
+    release_lock
   done
 }
 
@@ -230,11 +300,13 @@ summary() {
 
 FE=0
 NEED_PG=0
+STOP_DB=0
 if [ "$MODE" = "full" ]; then plan_full; NEED_PG=1; else plan_quick; fi
 
 if [ "$DRY" -eq 1 ]; then
   echo "mode=$MODE base=$BASE frontend=$FE"
   [ "$NEED_PG" -eq 1 ] && echo 'postgres: scripts/worktree_postgres.sh (exported as FORK_PGURL for the commands below)'
+  [ "$MODE" = "full" ] && echo "lock: phases$LOCKED_PHASES hold $LOCK_DIR (mkdir lock, waits up to ${LOCK_TIMEOUT}s, released on exit/INT/TERM)"
   print_plan
   exit 0
 fi
@@ -253,10 +325,10 @@ if [ "$NEED_PG" -eq 1 ]; then
   }
   FORK_PGURL=${line#CAOS_TEST_POSTGRES_URL=}
   export FORK_PGURL
-  if [ "$MODE" = "full" ] && [ "$KEEPDB" -eq 0 ]; then
-    trap 'scripts/worktree_postgres.sh stop >/dev/null 2>&1' EXIT
-  fi
+  if [ "$MODE" = "full" ] && [ "$KEEPDB" -eq 0 ]; then STOP_DB=1; fi
 fi
+trap cleanup EXIT
+trap 'echo "fork_gates: interrupted; stopping gates" >&2; exit 130' INT TERM
 
 echo "HEAD $(git rev-parse --short HEAD), logs in $LOG"
 run_plan
