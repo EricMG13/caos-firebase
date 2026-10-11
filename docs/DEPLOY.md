@@ -37,8 +37,8 @@ gcloud services enable run.googleapis.com sqladmin.googleapis.com secretmanager.
 gcloud artifacts repositories create caos --repository-format=docker --location=$REGION
 gcloud sql instances create caos-pg --database-version=POSTGRES_17 --edition=ENTERPRISE \
   --cpu=1 --memory=3840MiB --region=$REGION --backup-start-time=02:00 \
-  --enable-point-in-time-recovery --deletion-protection \
-  --insights-config-query-insights-enabled
+  --enable-point-in-time-recovery --retain-backups-on-delete --deletion-protection \
+  --insights-config-query-insights-enabled --ssl-mode=ENCRYPTED_ONLY
 gcloud sql instances describe caos-pg \
   --format='yaml(settings.backupConfiguration,settings.insightsConfig,settings.deletionProtectionEnabled)'
 gcloud sql databases create caos --instance=caos-pg
@@ -49,6 +49,14 @@ gcloud storage buckets create gs://$PROJECT-caos-blobs --location=$REGION \
 `--cpu=1 --memory=3840MiB` is the 1-vCPU, 3.75 GB dedicated-core Enterprise machine;
 the gcloud reference says not to pass `--tier` for dedicated-core Enterprise instances,
 so `db-custom-1-3840` is not used as a flag value.
+
+`--retain-backups-on-delete` keeps automated and on-demand backups after the instance is
+deleted. `--ssl-mode=ENCRYPTED_ONLY` refuses unencrypted connections. No authorized
+networks are added: the only path in is Cloud Run's Cloud SQL socket and the Auth Proxy.
+`--connector-enforcement=REQUIRED` is deliberately not set: no fetched doc confirms that
+Cloud Run's built-in `--add-cloudsql-instances` socket counts as a connector, and the flag
+disables authorized networks and rejects direct connections. Test it on a scratch
+instance before ever enabling it on `caos-pg`.
 
 Proves: each command exits 0; `gcloud sql instances list` shows `caos-pg` RUNNABLE; the
 `describe` shows `enabled: true` for backups, `pointInTimeRecoveryEnabled: true`,
@@ -88,6 +96,10 @@ printf 'postgresql://caos:%s@/caos?host=/cloudsql/%s:%s:caos-pg' "$DBPW" $PROJEC
 
 ```bash
 gcloud iam service-accounts create caos-run --display-name "CAOS Cloud Run"
+gcloud iam service-accounts create caos-build --display-name "CAOS Cloud Build"
+BSA=caos-build@$PROJECT.iam.gserviceaccount.com
+gcloud projects add-iam-policy-binding $PROJECT --member serviceAccount:$BSA --role roles/artifactregistry.writer
+gcloud projects add-iam-policy-binding $PROJECT --member serviceAccount:$BSA --role roles/logging.logWriter
 SA=caos-run@$PROJECT.iam.gserviceaccount.com
 gcloud secrets add-iam-policy-binding openrouter-key --member serviceAccount:$SA --role roles/secretmanager.secretAccessor
 gcloud secrets add-iam-policy-binding caos-database-url --member serviceAccount:$SA --role roles/secretmanager.secretAccessor
@@ -104,6 +116,34 @@ The web `apiKey` comes from `firebase apps:create web caos --project "$PROJECT"`
 IMAGE=$REGION-docker.pkg.dev/$PROJECT/caos/caos:$(git rev-parse --short HEAD)
 gcloud builds submit --config cloudbuild.yaml \
   --substitutions=_IMAGE=$IMAGE,_FIREBASE_API_KEY=<web apiKey>,_FIREBASE_AUTH_DOMAIN=$PROJECT.firebaseapp.com
+```
+
+`cloudbuild.yaml` runs the build as `caos-build` (a user-specified service account, so
+logs go to Cloud Logging only), pins the builder image by digest, and sets
+`requestedVerifyOption: VERIFIED` so a build succeeds only if provenance is generated.
+Both Dockerfile base images are pinned as `tag@sha256:digest`; refresh the digests
+deliberately with `docker buildx imagetools inspect <tag>`.
+
+Not found in the fetched docs: whether `VERIFIED` works with a user-specified service
+account, any extra role it needs (`roles/artifactregistry.writer` includes
+`artifactregistry.attachments.create`), and the minimal role for the source upload of
+`gcloud builds submit` (the Go guide lists Storage Admin). If the first build fails on
+either, report the error text rather than widening roles blindly.
+
+Deploy by digest, and check the provenance:
+
+```bash
+IMAGE_DIGEST=$(gcloud artifacts docker images describe $IMAGE --format 'value(image_summary.fully_qualified_digest)')
+gcloud artifacts docker images describe $IMAGE_DIGEST --show-provenance
+```
+
+Apply the registry cleanup policy (keep the 10 most recent versions, delete untagged
+versions older than 30 days). Dry-run first, then apply; the docs' examples disagree on
+the default, so pass the flag explicitly. Changes take effect within about a day:
+
+```bash
+gcloud artifacts repositories set-cleanup-policies caos --location=$REGION --policy=ops/ar-cleanup.json --dry-run
+gcloud artifacts repositories set-cleanup-policies caos --location=$REGION --policy=ops/ar-cleanup.json --no-dry-run
 ```
 
 Proves: the image builds from the tracked tree and is in Artifact Registry.
@@ -133,7 +173,7 @@ state whether either flag restarts anything beyond the new revision every deploy
 ```bash
 NUM=$(gcloud projects describe $PROJECT --format='value(projectNumber)')
 ORIGIN=https://caos-$NUM.$REGION.run.app
-gcloud run deploy caos --image $IMAGE --region $REGION --port 8000 --no-cpu-throttling \
+gcloud run deploy caos --image $IMAGE_DIGEST --region $REGION --port 8000 --no-cpu-throttling \
   --min-instances 1 --max-instances 1 --timeout 3600 --memory 2Gi --cpu 1 \
   --execution-environment gen2 --allow-unauthenticated \
   --service-account $SA --cpu-boost --concurrency 40 \
@@ -146,6 +186,18 @@ gcloud run deploy caos --image $IMAGE --region $REGION --port 8000 --no-cpu-thro
 URL=$(gcloud run services describe caos --region $REGION --format='value(status.url)')
 echo "$URL"; echo "$ORIGIN"
 ```
+
+After the first successful deploy, `service.yaml` becomes the source of truth:
+
+```bash
+gcloud run services describe caos --region $REGION --format export > service.yaml
+```
+
+Review it and commit it (`--format export` already omits status and generated labels, so
+there is no field-deletion step; the docs name none for a Cloud Run to Cloud Run round
+trip). Later deploys use `gcloud run services replace service.yaml --region $REGION`
+(`--dry-run` validates only). Rollback means replacing with the previous image digest in
+`service.yaml`. Never split traffic: two revisions run two in-process workers.
 
 Both URLs serve. Use `$ORIGIN` in the browser: writes through the legacy
 `*.a.run.app` URL get 403 ORIGIN_REFUSED, and `CAOS_PUBLIC_ORIGIN` stays `$ORIGIN`.
@@ -226,6 +278,72 @@ Not found in the fetched docs: the new uptime check's ID in the command output (
 with the console or a list command before building an alert on it), and the IAM role to
 create the check. The budget is alerts-only: it notifies the billing account's
 administrators and never stops spend.
+
+Alerts. Create the email channel (the `beta` command is the only documented form; the
+policies command is GA), then substitute its resource name into the policy files, which
+carry `PROJECT_ID` and `CHANNEL_ID` placeholders. The owner ignores the restart alert
+during their own deploys.
+
+```bash
+gcloud beta monitoring channels create --display-name="caos owner" --type=email \
+  --channel-labels=email_address=<owner email>
+gcloud monitoring channels list
+CH=<channel id from the list>
+for f in restart memory sql-refused; do
+  sed -e "s/PROJECT_ID/$PROJECT/g" -e "s/CHANNEL_ID/$CH/g" ops/monitoring/$f.json > /tmp/$f.json
+  gcloud monitoring policies create --policy-from-file=/tmp/$f.json
+done
+```
+
+Not found in the fetched docs: that `cloudsql.googleapis.com/database/network/connection_refused_count`
+and `cloudsql_database` / `database_id` are the right metric and labels for `sql-refused.json`
+(the metric name is the brief's; confirm it in Metrics Explorer before creating the policy),
+that a new email channel needs verification before it notifies, and the role to create a policy.
+
+Lease-reclaim alert: not provided. `caos/graph/worker.py` emits no log line when a run's
+lease is reclaimed (the word appears only in comments), so there is no stable text for a
+log-based metric (`caos_lease_reclaims`) or `lease-reclaim.json`. Add both when the worker
+logs a reclaim.
+
+Secret access audit (DATA_READ for Secret Manager only). Read the policy, add only the
+`auditConfigs` block below, keep `bindings:` and `etag:` unchanged, write it back. If
+`set-iam-policy` reports a concurrent change, repeat all three steps. The logs are in the
+`_Default` bucket, may cost, and are read with `roles/logging.privateLogViewer`.
+
+```bash
+gcloud projects get-iam-policy $PROJECT > policy.yaml
+# add at the top of policy.yaml:
+#   auditConfigs:
+#   - auditLogConfigs:
+#     - logType: DATA_READ
+#     service: secretmanager.googleapis.com
+gcloud projects set-iam-policy $PROJECT policy.yaml
+```
+
+## 10. Restore drill (quarterly, and before a sync deploy that adds migrations)
+
+```bash
+gcloud sql backups list --instance=caos-pg
+gcloud sql instances create caos-pg-drill --database-version=POSTGRES_17 --edition=ENTERPRISE \
+  --cpu=1 --memory=3840MiB --region=$REGION
+gcloud sql backups restore <backup id> --restore-instance=caos-pg-drill --backup-instance=caos-pg
+```
+
+Then connect through the Auth Proxy
+(`cloud-sql-proxy --port 5432 $PROJECT:$REGION:caos-pg-drill`, and `psql` to
+127.0.0.1 as user `caos`) and compare `select count(*) from caos_store.runs;` and
+`select count(*) from caos_store.sources;` with production. The owner then deletes
+`caos-pg-drill`; deleting instances is denied to agents. Record the date and counts below.
+The restore overwrites the target and restarts it; the drill target is scratch, never
+`caos-pg`. A restore to an existing instance needs it to exist first (the reference
+does not confirm that a same-tier instance is required).
+
+A real restore needs a new `caos-database-url` secret version and a deploy; blobs are
+content-addressed and need no restore.
+
+| Date | Backup id | runs (prod / drill) | sources (prod / drill) | Result |
+| :--- | :--- | :--- | :--- | :--- |
+| | | | | |
 
 ## Local container smoke
 

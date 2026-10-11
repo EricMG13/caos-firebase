@@ -14,3 +14,5 @@ docs/rebuild/runs
 coverage.xml
 .coverage
 bandit.json
+**/.env
+**/.env.*

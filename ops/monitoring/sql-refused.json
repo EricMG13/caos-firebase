@@ -1,0 +1,20 @@
+{
+  "displayName": "caos Cloud SQL connections refused",
+  "combiner": "OR",
+  "conditions": [
+    {
+      "displayName": "connection_refused_count above 0",
+      "conditionThreshold": {
+        "filter": "metric.type=\"cloudsql.googleapis.com/database/network/connection_refused_count\" AND resource.type=\"cloudsql_database\" AND resource.label.database_id=\"PROJECT_ID:caos-pg\"",
+        "aggregations": [
+          {"alignmentPeriod": "60s", "perSeriesAligner": "ALIGN_SUM"}
+        ],
+        "comparison": "COMPARISON_GT",
+        "thresholdValue": 0,
+        "duration": "0s",
+        "trigger": {"count": 1}
+      }
+    }
+  ],
+  "notificationChannels": ["projects/PROJECT_ID/notificationChannels/CHANNEL_ID"]
+}
