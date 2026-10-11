@@ -93,6 +93,16 @@ These come from `docs/research/2026-10-11-firebase-features-review.md` and land 
     fallback is a Cloud Storage implementation of the existing `volume` protocol in
     `caos/blobs.py` (whole-object upload). That needs its own FD record and plan.
 
+- **H5, Architecture Center items** (owner, 2026-10-11): A1–A5 and A7 from
+  `docs/research/2026-10-11-architecture-center-review.md` §2.
+  - A1: restore drill and retained backups.
+  - A2: the `service.yaml` procedure.
+  - A3: single-instance alerts.
+  - A4: build provenance, a build service account and digest pins.
+  - A5: secret-access audit logs.
+  - A7: SSL-only Cloud SQL, with connector enforcement if the docs confirm it.
+  - A6, the owner's 2-Step Verification, is the owner's own action.
+
 ## 4. Decision log
 
 - The fork's decisions are renamed D1–D14 → FD1–FD14 in `docs/decisions.md` and every
@@ -188,6 +198,7 @@ only, no code). Conflict resolution and fixes go to sub-agents:
 | H1 runbook hardening | `mx-scaffold` | `mx-precise` |
 | H2 shutdown budget (exactly-once path) | `mx-precise` | `mx-adversary` |
 | H3 provisioning script (handles passwords) | `mx-feature` | `mx-adversary` |
+| H5 build and operations hardening | `mx-scaffold` | `mx-adversary` |
 | Whole branch | — | `mx-architect` |
 
 ## 9. Out of scope
