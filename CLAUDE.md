@@ -19,8 +19,9 @@ The build contract is `docs/specs/2026-10-04-firebase-design.md`; decisions are
   FD10, FD12, FD14), frontend sign-in (FD7, FD13), Dockerfile, `cloudbuild.yaml`,
   `scripts/container_smoke.sh`, `docs/DEPLOY.md` (FD11). Databricks code stays in the
   tree, inert. Deploy follows `docs/DEPLOY.md`; the container smoke must pass first.
-- **Hardening H1-H3** in the same branch (runbook, shutdown inside Cloud Run's grace,
-  user-provisioning script; FD19, FD20).
+- **Hardening H1-H5 lands on this branch in later commits:** runbook hardening (H1),
+  shutdown inside Cloud Run's grace (H2, FD20), user-provisioning script (H3, FD19),
+  blob-write check on the mount (H4), Architecture Center items A1-A5 and A7 (H5).
 - **Phase 2 is dropped** (FD17): the Databricks code is not deleted, so upstream merges
   stay clean.
 - **Firebase project:** `caos-firebase-prod`.
