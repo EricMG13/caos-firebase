@@ -141,7 +141,12 @@ def _fetch() -> tuple[dict[str, str], float]:
             _FETCHES.release()
             done.set()
 
-    threading.Thread(target=run, name="caos-google-keys", daemon=True).start()
+    try:
+        threading.Thread(target=run, name="caos-google-keys", daemon=True).start()
+    except RuntimeError:
+        # No thread, so `run` never releases the slot: give it back here.
+        _FETCHES.release()
+        raise Refusal(RefusalCode.IDENTITY_UNAVAILABLE) from None
     done.wait(CERTS_DEADLINE_SECONDS)
     if not answers:
         raise Refusal(RefusalCode.IDENTITY_UNAVAILABLE)

@@ -499,3 +499,26 @@ def test_the_fetch_stops_waiting_at_its_deadline(
         assert time.monotonic() - begun < 1.0
     finally:
         release.set()
+
+
+def test_a_helper_thread_that_cannot_start_is_unavailable_and_frees_its_slot(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    failing = [True]
+    start = threading.Thread.start
+
+    def refuse(self: threading.Thread) -> None:
+        if failing[0]:
+            raise RuntimeError
+        start(self)
+
+    monkeypatch.setattr(threading.Thread, "start", refuse)
+    monkeypatch.setattr(
+        fa, "_certificates", lambda deadline: (200, b'{"k1": "pem"}', "")
+    )
+    for _ in range(fa.CERTS_FETCH_LIMIT + 1):
+        with pytest.raises(Refusal) as refused:
+            fa._fetch()
+        assert refused.value.code is RefusalCode.IDENTITY_UNAVAILABLE
+    failing[0] = False
+    assert fa._fetch() == ({"k1": "pem"}, 0.0)
