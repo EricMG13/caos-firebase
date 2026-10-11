@@ -75,7 +75,7 @@ without it, so there is no placeholder second deploy. Requests through the legac
 skipped, anything else malformed refuses the boot. The `^@^` prefix
 makes `@` the env separator so the role map's `;` survives. `--allow-unauthenticated`
 lets the browser reach the service; sign-in is the app's own. `CAOS_RUN_CEILING=120.00`
-is set explicitly, as at the fork point (D11): it bounds each run's reservation, and the
+is set explicitly, as at the fork point (FD11): it bounds each run's reservation, and the
 OpenRouter key's own limit is the hard spend stop.
 
 ```bash

@@ -6,7 +6,7 @@ import { auth, writeSessionCookie } from "./firebase";
 
 type Gate = "checking" | "signed-out" | "signed-in";
 
-/** Seconds before expiry the token is force-refreshed (D13): the SDK refreshes on
+/** Seconds before expiry the token is force-refreshed (FD13): the SDK refreshes on
     demand only inside its last 30 s, and a listener starts no refresh of its own. */
 const REFRESH_LEAD_S = 120;
 /** A failed forced refresh is tried again after this long. */

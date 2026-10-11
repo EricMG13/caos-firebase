@@ -301,7 +301,7 @@ def probe_identity() -> HealthCode:
 
     In firebase mode, Google's signing keys: the probe fills the cache off the
     request path, so the first signed-in page after a start is not refused
-    (D12), and reports `IDENTITY_UNAVAILABLE` while no usable keys are held.
+    (FD12), and reports `IDENTITY_UNAVAILABLE` while no usable keys are held.
     """
     if FIREBASE_ENV in os.environ:
         return "OK" if firebase_auth.warm() else "IDENTITY_UNAVAILABLE"

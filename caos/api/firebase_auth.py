@@ -60,7 +60,7 @@ _MAX_AGE = re.compile(r"max-age=(\d+)", re.IGNORECASE)
 
 
 def role_map(value: str) -> dict[str, GlobalRole]:
-    """`email=ROLE;email=ROLE`, emails lower-cased, empty entries skipped (D14);
+    """`email=ROLE;email=ROLE`, emails lower-cased, empty entries skipped (FD14);
     `EDGE_CONFIG_INVALID` for an empty map, an entry without `=` or `@`, an
     unknown role, or an email twice."""
     roles: dict[str, GlobalRole] = {}
@@ -262,7 +262,7 @@ _KEYS = GoogleKeys()
 
 
 def warm() -> bool:
-    """Fill the process's key cache off the request path (D12); whether usable
+    """Fill the process's key cache off the request path (FD12); whether usable
     keys are held. The identity health probe calls this every round."""
     return _KEYS.warm()
 
