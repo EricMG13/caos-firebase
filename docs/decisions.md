@@ -71,6 +71,13 @@ Later entries override earlier ones. Details live in the design spec named in ea
 - FD21 (2026-10-11, owner) — CI's 800-line `size` check applies to fork-authored PRs.
   The re-fork PR and upstream-sync PRs are exempt and may merge with `size` red. They
   are reviewed on the fork's own changes: `git diff <upstream commit merged>..HEAD`.
+  Owner ruling of 2026-10-11: for the re-fork (import) PR, the `lint` job step "the
+  suppression baseline did not rise" (`scripts/check_gate_config.py --against origin/main`)
+  also fails structurally, because `main` is the skeleton with no code (0 suppressions), so
+  every upstream suppression counts as a rise. That PR is measured against its real base B
+  instead (`--against d07fea550d33c42ece390aad970d7ca994b9c406`, exit 0 locally) and may
+  merge with that step red, like `size`. Later upstream-sync PRs compare against a populated
+  `main` and the step applies normally.
 - FD22 (2026-10-11, owner) — The repository is public, with merge commits only (squash
   and rebase merges are off), because a squash or rebase loses upstream's ancestry and
   breaks every later `git merge upstream`. A pre-publication scan (gitleaks over all
