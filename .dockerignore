@@ -16,3 +16,5 @@ coverage.xml
 bandit.json
 **/.env
 **/.env.*
+.superpowers/
+.gitnexus/

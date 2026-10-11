@@ -33,8 +33,10 @@ Console settings the config does not cover:
 ```bash
 PROJECT=<firebase project id>; REGION=europe-west2; gcloud config set project $PROJECT
 gcloud services enable run.googleapis.com sqladmin.googleapis.com secretmanager.googleapis.com \
-  cloudbuild.googleapis.com artifactregistry.googleapis.com identitytoolkit.googleapis.com
+  cloudbuild.googleapis.com artifactregistry.googleapis.com identitytoolkit.googleapis.com \
+  containeranalysis.googleapis.com
 gcloud artifacts repositories create caos --repository-format=docker --location=$REGION
+gcloud storage buckets create gs://${PROJECT}_cloudbuild --location=$REGION --uniform-bucket-level-access
 gcloud sql instances create caos-pg --database-version=POSTGRES_17 --edition=ENTERPRISE \
   --cpu=1 --memory=3840MiB --region=$REGION --backup-start-time=02:00 \
   --enable-point-in-time-recovery --retain-backups-on-delete --deletion-protection \
@@ -76,6 +78,7 @@ CLOUDSDK_CORE_DISABLE_FILE_LOGGING=true gcloud sql users create caos --instance=
 printf 'postgresql://caos:%s@/caos?host=/cloudsql/%s:%s:caos-pg' "$DBPW" $PROJECT $REGION \
   | gcloud secrets create caos-database-url --data-file=-; unset DBPW
 read -rs KEY && printf %s "$KEY" | gcloud secrets create openrouter-key --data-file=-; unset KEY   # paste the key, Enter; nothing is echoed
+printf '%s' '<owner email>=ANALYST;<viewer email>=READER' | gcloud secrets create caos-role-map --data-file=-
 ```
 
 Proves: `gcloud secrets list` shows both names (it never shows a value).
@@ -100,9 +103,11 @@ gcloud iam service-accounts create caos-build --display-name "CAOS Cloud Build"
 BSA=caos-build@$PROJECT.iam.gserviceaccount.com
 gcloud projects add-iam-policy-binding $PROJECT --member serviceAccount:$BSA --role roles/artifactregistry.writer
 gcloud projects add-iam-policy-binding $PROJECT --member serviceAccount:$BSA --role roles/logging.logWriter
+gcloud storage buckets add-iam-policy-binding gs://${PROJECT}_cloudbuild --member serviceAccount:$BSA --role roles/storage.objectViewer
 SA=caos-run@$PROJECT.iam.gserviceaccount.com
 gcloud secrets add-iam-policy-binding openrouter-key --member serviceAccount:$SA --role roles/secretmanager.secretAccessor
 gcloud secrets add-iam-policy-binding caos-database-url --member serviceAccount:$SA --role roles/secretmanager.secretAccessor
+gcloud secrets add-iam-policy-binding caos-role-map --member serviceAccount:$SA --role roles/secretmanager.secretAccessor
 gcloud storage buckets add-iam-policy-binding gs://$PROJECT-caos-blobs --member serviceAccount:$SA --role roles/storage.objectUser
 gcloud projects add-iam-policy-binding $PROJECT --member serviceAccount:$SA --role roles/cloudsql.client
 ```
@@ -112,7 +117,11 @@ gcloud projects add-iam-policy-binding $PROJECT --member serviceAccount:$SA --ro
 The web `apiKey` comes from `firebase apps:create web caos --project "$PROJECT"` then
 `firebase apps:sdkconfig web --project "$PROJECT"`.
 
+The build uploads the working directory, so it must be clean (`.gcloudignore` also keeps
+`.superpowers/` and `.gitnexus/` out of the upload):
+
 ```bash
+test -z "$(git status --porcelain)" || { echo 'working tree not clean: commit or stash first'; exit 1; }
 IMAGE=$REGION-docker.pkg.dev/$PROJECT/caos/caos:$(git rev-parse --short HEAD)
 gcloud builds submit --config cloudbuild.yaml \
   --substitutions=_IMAGE=$IMAGE,_FIREBASE_API_KEY=<web apiKey>,_FIREBASE_AUTH_DOMAIN=$PROJECT.firebaseapp.com
@@ -121,7 +130,8 @@ gcloud builds submit --config cloudbuild.yaml \
 `cloudbuild.yaml` runs the build as `caos-build` (a user-specified service account, so
 logs go to Cloud Logging only), pins the builder image by digest, and sets
 `requestedVerifyOption: VERIFIED` so a build succeeds only if provenance is generated.
-Both Dockerfile base images are pinned as `tag@sha256:digest`; refresh the digests
+Every image is pinned as `tag@sha256:digest`: node, python, uv, the Dockerfile frontend
+(`docker/dockerfile`) and the cloud-builders docker builder; refresh the digests
 deliberately with `docker buildx imagetools inspect <tag>`.
 
 Not found in the fetched docs: whether `VERIFIED` works with a user-specified service
@@ -146,7 +156,7 @@ gcloud artifacts repositories set-cleanup-policies caos --location=$REGION --pol
 gcloud artifacts repositories set-cleanup-policies caos --location=$REGION --policy=ops/ar-cleanup.json --no-dry-run
 ```
 
-Proves: the image builds from the tracked tree and is in Artifact Registry.
+Proves: the image builds from the clean working tree and is in Artifact Registry.
 
 ## 6. Deploy
 
@@ -181,8 +191,8 @@ gcloud run deploy caos --image $IMAGE_DIGEST --region $REGION --port 8000 --no-c
   --add-cloudsql-instances $PROJECT:$REGION:caos-pg \
   --add-volume name=blobs,type=cloud-storage,bucket=$PROJECT-caos-blobs \
   --add-volume-mount volume=blobs,mount-path=/data/blobs \
-  --set-secrets OPENROUTER_API_KEY=openrouter-key:1,CAOS_DATABASE_URL=caos-database-url:1 \
-  --set-env-vars "^@^CAOS_BLOB_ROOT=/data/blobs@CAOS_FIREBASE_PROJECT=$PROJECT@CAOS_ROLE_MAP=<owner email>=ANALYST;<viewer email>=READER@CAOS_MODEL_ENDPOINT=openai/gpt-6-luna@CAOS_MODEL_PRICE=openai/gpt-6-luna,0.0000002,0.000001,2026-10-04@CAOS_REASONING_EFFORT=high@CAOS_PROVIDER_ORDER=openai@CAOS_RUN_CEILING=120.00@CAOS_PUBLIC_ORIGIN=$ORIGIN"
+  --set-secrets OPENROUTER_API_KEY=openrouter-key:1,CAOS_DATABASE_URL=caos-database-url:1,CAOS_ROLE_MAP=caos-role-map:1 \
+  --set-env-vars "^@^CAOS_BLOB_ROOT=/data/blobs@CAOS_FIREBASE_PROJECT=$PROJECT@CAOS_MODEL_ENDPOINT=openai/gpt-6-luna@CAOS_MODEL_PRICE=openai/gpt-6-luna,0.0000002,0.000001,2026-10-04@CAOS_REASONING_EFFORT=high@CAOS_PROVIDER_ORDER=openai@CAOS_RUN_CEILING=120.00@CAOS_PUBLIC_ORIGIN=$ORIGIN"
 URL=$(gcloud run services describe caos --region $REGION --format='value(status.url)')
 echo "$URL"; echo "$ORIGIN"
 ```
@@ -193,11 +203,17 @@ After the first successful deploy, `service.yaml` becomes the source of truth:
 gcloud run services describe caos --region $REGION --format export > service.yaml
 ```
 
-Review it and commit it (`--format export` already omits status and generated labels, so
+Review it. The role map is a secret, not an env var, so no email should be in the file; this must print nothing before you commit (if it prints anything, such as creator or lastModifier annotations, remove those lines first):
+
+```bash
+grep -nE '[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}' service.yaml | grep -v 'iam.gserviceaccount.com'
+```
+
+Then commit it (`--format export` already omits status and generated labels, so
 there is no field-deletion step; the docs name none for a Cloud Run to Cloud Run round
 trip). Later deploys use `gcloud run services replace service.yaml --region $REGION`
 (`--dry-run` validates only). Rollback means replacing with the previous image digest in
-`service.yaml`. Never split traffic: two revisions run two in-process workers.
+`service.yaml`. To change the role map, add a `caos-role-map` secret version and bump its pin. Never split traffic: two revisions run two in-process workers.
 
 Both URLs serve. Use `$ORIGIN` in the browser: writes through the legacy
 `*.a.run.app` URL get 403 ORIGIN_REFUSED, and `CAOS_PUBLIC_ORIGIN` stays `$ORIGIN`.
@@ -291,7 +307,7 @@ administrators and never stops spend.
 Alerts. Create the email channel (the `beta` command is the only documented form; the
 policies command is GA), then substitute its resource name into the policy files, which
 carry `PROJECT_ID` and `CHANNEL_ID` placeholders. The owner ignores the restart alert
-during their own deploys.
+during their own deploys. Validate each filter in Metrics Explorer before creating its policy.
 
 ```bash
 gcloud beta monitoring channels create --display-name="caos owner" --type=email \
@@ -319,14 +335,21 @@ Secret access audit (DATA_READ for Secret Manager only). Read the policy, add on
 `set-iam-policy` reports a concurrent change, repeat all three steps. The logs are in the
 `_Default` bucket, may cost, and are read with `roles/logging.privateLogViewer`.
 
+If `auditConfigs:` already exists in the policy, append the new entry to that list; never
+add a second `auditConfigs:` key, because gcloud's loader silently drops a duplicate key
+and `set-iam-policy` would then remove the existing audit configs. The policy lists every
+member's email, so it goes in a temp file that is removed afterwards, never in the repo.
+
 ```bash
-gcloud projects get-iam-policy $PROJECT > policy.yaml
-# add at the top of policy.yaml:
+POLICY=$(mktemp)
+gcloud projects get-iam-policy $PROJECT > "$POLICY"
+# add (or append to the existing auditConfigs list):
 #   auditConfigs:
 #   - auditLogConfigs:
 #     - logType: DATA_READ
 #     service: secretmanager.googleapis.com
-gcloud projects set-iam-policy $PROJECT policy.yaml
+gcloud projects set-iam-policy $PROJECT "$POLICY"
+rm -f "$POLICY"
 ```
 
 ## 10. Restore drill (quarterly, and before a sync deploy that adds migrations)
@@ -338,11 +361,22 @@ gcloud sql instances create caos-pg-drill --database-version=POSTGRES_17 --editi
 gcloud sql backups restore <backup id> --restore-instance=caos-pg-drill --backup-instance=caos-pg
 ```
 
-Then connect through the Auth Proxy
-(`cloud-sql-proxy --port 5432 $PROJECT:$REGION:caos-pg-drill`, and `psql` to
-127.0.0.1 as user `caos`) and compare `select count(*) from caos_store.runs;` and
-`select count(*) from caos_store.sources;` with production. The owner then deletes
-`caos-pg-drill`; deleting instances is denied to agents. Record the date and counts below.
+The drill needs no production password. Set a throwaway one on the drill instance only,
+connect through the Auth Proxy (`cloud-sql-proxy --port 5432 $PROJECT:$REGION:caos-pg-drill`,
+`psql` to 127.0.0.1 as user `caos`), then discard it:
+
+```bash
+DBPW=$(openssl rand -hex 24)
+CLOUDSDK_CORE_DISABLE_FILE_LOGGING=true gcloud sql users set-password caos --instance=caos-pg-drill --password="$DBPW"
+# connect with $DBPW, run the checks below, then:
+unset DBPW
+```
+
+Pass criteria (none needs a production credential): schemas `caos_store` and `caos_graph`
+exist; `select count(*) from caos_store.runs;` and `... caos_store.sources;` are above 0;
+`select max(created_at) from caos_store.runs;` is no later than the backup's end time
+(`gcloud sql backups list`) and within the backup window. The owner then deletes
+`caos-pg-drill`; deleting instances is denied to agents. Record the date and results below.
 The restore overwrites the target and restarts it; the drill target is scratch, never
 `caos-pg`. A restore to an existing instance needs it to exist first (the reference
 does not confirm that a same-tier instance is required).
@@ -350,9 +384,9 @@ does not confirm that a same-tier instance is required).
 A real restore needs a new `caos-database-url` secret version and a deploy; blobs are
 content-addressed and need no restore.
 
-| Date | Backup id | runs (prod / drill) | sources (prod / drill) | Result |
-| :--- | :--- | :--- | :--- | :--- |
-| | | | | |
+| Date | Backup id | schemas present | runs / sources rows | newest runs.created_at vs backup end | Result |
+| :--- | :--- | :--- | :--- | :--- | :--- |
+| | | | | | |
 
 ## Local container smoke
 
