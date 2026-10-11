@@ -6,11 +6,23 @@ modes: what reached the application is exactly what the recorder kept.
 
 from __future__ import annotations
 
+import anyio
 import pytest
 from fastapi.testclient import TestClient
-from starlette.types import Receive, Scope, Send
+from starlette.types import Message, Receive, Scope, Send
 
-from caos.api.edge import FIREBASE_CSP, SECURITY_HEADERS, EdgeGuard, resolve_mode
+from caos.api.edge import (
+    _DELIVERABLE_RENDER_CSP,
+    FIREBASE_CSP,
+    SECURITY_HEADER_PAIRS,
+    SECURITY_HEADERS,
+    EdgeGuard,
+    EdgeMode,
+    _repeated_credential,
+    _secured,
+    _security_header_pairs,
+    resolve_mode,
+)
 from caos.refusals import Refusal, RefusalCode
 
 PUBLIC = "https://caos.example.run.app"
@@ -180,3 +192,35 @@ def test_a_cookie_authenticated_unsafe_request_is_served_only_same_origin() -> N
     )
     assert served.status_code == 200
     assert len(recorder.seen) == 1
+
+
+@pytest.mark.usefixtures("firebase")
+def test_the_deliverable_render_keeps_its_own_policy_in_firebase_mode() -> None:
+    _, client = _far()
+    served = client.get("/api/v1/cases/c/revisions/r/render")
+    assert served.status_code == 200
+    assert served.headers["content-security-policy"] == _DELIVERABLE_RENDER_CSP
+    assert served.headers["x-content-type-options"] == "nosniff"
+
+
+def test_the_policy_helpers_default_to_the_shared_policy() -> None:
+    assert _security_header_pairs("/x") == SECURITY_HEADER_PAIRS
+    sent: list[Message] = []
+
+    async def record(message: Message) -> None:
+        sent.append(message)
+
+    start: Message = {"type": "http.response.start", "status": 200, "headers": []}
+    anyio.run(_secured(record, "/x"), start)
+    headers = dict(sent[0]["headers"])
+    assert (
+        headers[b"content-security-policy"]
+        == SECURITY_HEADERS["content-security-policy"].encode()
+    )
+
+
+def test_behind_the_platform_one_forwarded_token_passes_and_two_do_not() -> None:
+    platform = EdgeMode(public_origin=None, platform=True)
+    one = [(b"x-forwarded-access-token", b"a")]
+    assert _repeated_credential(platform, one) is False
+    assert _repeated_credential(platform, one * 2) is True

@@ -286,6 +286,8 @@ def test_the_base_url_is_https_or_loopback_http(
         "http://127.0.0.2/v1",
         "ftp://127.0.0.1/v1",
         "https://user:pass@gateway.example/v1",
+        "https://user@gateway.example/v1",
+        "https://:pass@gateway.example/v1",
         "https://gateway.example:99999/v1",
         "https:///v1",
         "not a url",

@@ -80,10 +80,12 @@ def test_create_refuses_a_mismatched_confirmation(
     assert not [call for call in calls if call[0] == "create"]
     out = capsys.readouterr()
     assert SECRET not in out.out + out.err
+    assert (out.out, out.err) == ("", "create: refused (passwords differ)\n")
 
 
 def test_verify_marks_an_existing_user(calls: Calls) -> None:
     assert firebase_users.main(["--project", "p", "verify", "b@example.com"]) == 0
+    assert ("get", {"email": "b@example.com"}) in calls
     assert ("update", {"uid": "u2", "email_verified": True}) in calls
     assert _inits(calls) == ONE_INIT
 
@@ -130,4 +132,49 @@ def test_create_returns_the_new_uid(calls: Calls) -> None:
 
 def test_verify_returns_the_existing_uid(calls: Calls) -> None:
     assert firebase_users.verify("b@example.com") == "u2"
-    assert calls[-1] == ("update", {"uid": "u2", "email_verified": True})
+    assert calls == [
+        ("get", {"email": "b@example.com"}),
+        ("update", {"uid": "u2", "email_verified": True}),
+    ]
+
+
+def test_create_prompts_twice_and_reports_the_uid_on_stdout(
+    calls: Calls, capsys: pytest.CaptureFixture[str]
+) -> None:
+    prompts: list[str] = []
+
+    def read(prompt: str) -> str:
+        prompts.append(prompt)
+        return SECRET
+
+    code = firebase_users.main(
+        ["--project", "p", "create", "a@example.com"], read_password=read
+    )
+    out = capsys.readouterr()
+    assert code == 0
+    assert prompts == ["Password: ", "Repeat password: "]
+    assert (out.out, out.err) == (
+        "create: a@example.com uid=u1 email_verified=true\n",
+        "",
+    )
+
+
+@pytest.mark.parametrize("argv", [["create", "a@example.com"], ["--project", "p"]])
+def test_the_project_and_a_command_are_both_required(
+    argv: list[str], capsys: pytest.CaptureFixture[str]
+) -> None:
+    with pytest.raises(SystemExit) as done:
+        firebase_users.parser().parse_args(argv)
+    assert done.value.code == 2
+    assert "required" in capsys.readouterr().err
+
+
+def test_the_help_describes_the_script_its_project_and_each_command() -> None:
+    text = " " + " ".join(firebase_users.parser().format_help().split()) + " "
+    for phrase in (
+        "Create or verify a CAOS sign-in.",
+        "Firebase project id",
+        "create an email/password user, verified",
+        "mark an existing user's email verified",
+    ):
+        assert f" {phrase} " in text
