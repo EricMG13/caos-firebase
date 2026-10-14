@@ -18,21 +18,28 @@ from __future__ import annotations
 import json
 import sys
 from collections.abc import Mapping
+from datetime import date
 from enum import StrEnum
 from typing import Annotated, Literal
 from uuid import UUID
 
 from pydantic import (
+    AfterValidator,
     AwareDatetime,
     BaseModel,
     ConfigDict,
     Field,
     StrictBool,
     TypeAdapter,
+    model_validator,
 )
 from pydantic.json_schema import models_json_schema
 
 from caos.api.identity import GlobalRole
+from caos.book.classification import OUTLOOKS
+from caos.calculators.credit_model.frame import Basis, Case, ColumnKind, Reason
+from caos.calculators.credit_model.layout import LineKind
+from caos.calculators.credit_model.layout import Unit as LineUnit
 from caos.deliverable.render import traced_line
 from caos.evidence.citations import WHOLE_LINE, WHOLE_LINE_AS_STORED, CitationRule
 from caos.graph.route import EdgeType, NodeState
@@ -52,6 +59,7 @@ from caos.methodology.tables import (
 )
 from caos.pricing import MAX_MODEL_CHOICES
 from caos.refusals import RefusalCode
+from caos.store.book import WithdrawalReason
 from caos.store.gates import Gate, GateState
 from caos.store.members import Standing
 
@@ -94,9 +102,9 @@ MOMENT_CHARS = 64  # an ISO-8601 instant with its offset, as `read_verdict` read
 # what refuses a draft past them.
 NARRATIVE_CHARS = 2000
 NARRATIVE_SPANS = 64
-BOOK_CASES_MAX = 4  # "Two to four credits side by side"
-BOOK_COLUMNS_MAX = 16  # the host-declared columns of the CP-CF projection
-BOOK_PERIODS_MAX = 8  # beyond it a row is partial, `LIST_TRUNCATED`
+BOOK_ISSUERS_MAX = 1000  # beyond it the Book is partial, `LIST_TRUNCATED`
+BOOK_HISTORY_MAX = 100  # an issuer's other entries; beyond it `LIST_TRUNCATED`
+BOOK_BASES_MAX = 8  # LTM, PF_LTM, BASE_FY1..3 and DOWNSIDE_FY1..3 (spec B11)
 BRIEF_QUESTIONS_MAX = 32  # `CP_DR_RESEARCH_BRIEF_V1.md`'s bounded batch
 # The whole brief, as `caos.store.run_inputs` pins it and CP-DR reads it: its
 # canonical JSON is at most 64 KiB. Every field above may be at its own bound
@@ -108,6 +116,9 @@ BRIEF_BYTES = 65_536
 # each one line the store bounds at 1 KiB (`caos.methodology.qualifiers`).
 QUALIFIERS_MAX = 4
 QUALIFIER_CHARS = 1024
+# A rate deck's rows: four reference rates over five years
+# (`caos.store.rate_decks.DECK_ROWS_MAX`, restated where the wire refuses it).
+RATE_DECK_ROWS_MAX = 20
 
 Id = Annotated[str, Field(max_length=ID_CHARS)]
 Text = Annotated[str, Field(max_length=TEXT_CHARS)]
@@ -338,6 +349,14 @@ CLEARS: Mapping[RefusalCode, str] = {
     _C.STORE_NOT_CONFIGURED: "An operator must configure the store.",
     _C.STORE_UNAVAILABLE: "Retry when the store answers.",
     _C.IDENTITY_UNAVAILABLE: "Retry when the workspace answers.",
+    _C.RUN_NOT_COMPLETE_FOR_BOOK: (
+        "Add a COMPLETE run of this case with CP-1 accepted, an issuer subject"
+        " and a Model that shows its grid."
+    ),
+    _C.BOOK_ENTRY_NOT_FOUND: "Name a book entry of this case.",
+    _C.BOOK_ENTRY_ALREADY_WITHDRAWN: (
+        "Nothing; the entry is withdrawn for good. Add a newer run instead."
+    ),
 }
 
 
@@ -388,6 +407,10 @@ class ActionName(StrEnum):
     SIGN_OPINION = "SIGN_OPINION"
     FREEZE_DELIVERABLE = "FREEZE_DELIVERABLE"
     FILE_DELIVERABLE = "FILE_DELIVERABLE"
+    # Plan 3 Task 5. Add to Book is judged by the Model read (per run); Withdraw
+    # by the Book read (per entry, on the entry's own case).
+    ADD_TO_BOOK = "ADD_TO_BOOK"
+    WITHDRAW_BOOK_ENTRY = "WITHDRAW_BOOK_ENTRY"
 
 
 class ActionView(BaseModel):
@@ -955,6 +978,8 @@ class AnalysisBody(BaseModel):
     model_config = _CLOSED
 
     case_id: UUID
+    # None on a read under the desk-wide grant (spec B9): the case's other
+    # runs stay member-only, so a granted read names none of them.
     latest_run_id: UUID | None
     displayed_run_id: UUID | None
     subject: RunSubjectView | None
@@ -1023,143 +1048,246 @@ class ModelForecast(BaseModel):
     periods: Annotated[list[ModelPeriod], Field(max_length=240)]
 
 
-class ModelBody(BaseModel):
-    """The accepted forecast, or why there is none.
+# The credit model (Plan 2): CP-1's registers as the host's calculator lays
+# them out (`caos.calculators.credit_model`). Its text is CP-1's cell text or
+# a host label built on it, so it is bounded by a cell and a host prefix; a
+# limitation lists the columns a note is on, so it is bounded by them.
+MODEL_COLUMNS_MAX = 64
+MODEL_LINES_MAX = 400
+MODEL_SOURCES_MAX = 8
+MODEL_TEXT_CHARS = 2 * CELL_CHARS
+MODEL_LIMITATIONS_MAX = 2048
+MODEL_LIMITATION_CHARS = MODEL_TEXT_CHARS + MODEL_COLUMNS_MAX * (MODEL_TEXT_CHARS + 2)
+ModelText = Annotated[str, Field(max_length=MODEL_TEXT_CHARS)]
 
-    `unavailable_reason` says there is no accepted forecast; the two fields
-    beside it say whether one is still coming. A body that carried neither
-    answered "not yet" to a run that had ended, which is the same blindness
-    Analysis carried until `blocked_by` joined it.
-    """
+
+class ModelSourceView(BaseModel):
+    """A CP-1 row a cell's figure came from: its own source id and locator,
+    and the CP-1 citation its `[C<n>]` marker names (D107), else null."""
+
+    model_config = _CLOSED
+
+    source_id: ModelText
+    source_locator: ModelText
+    citation: CitationView | None
+
+
+class ModelCellView(BaseModel):
+    """One cell: an exact decimal string, or the reason it has none (never
+    both); how it was reached; CP-1's own figure where the host recomputed
+    one; the cell's note; and the rows it came from, at most
+    `MODEL_SOURCES_MAX`."""
+
+    model_config = _CLOSED
+
+    value: DecimalText | None
+    reason: Reason | None
+    basis: Basis | None
+    stated: DecimalText | None
+    note: ModelText | None
+    sources: Annotated[list[ModelSourceView], Field(max_length=MODEL_SOURCES_MAX)]
+
+
+class ModelColumnView(BaseModel):
+    """One column: a reported, derived or projected period. `column_id` is
+    opaque; a reader uses the other fields."""
+
+    model_config = _CLOSED
+
+    column_id: ModelText
+    kind: ColumnKind
+    label: ModelText
+    period_id: ModelText | None
+    fiscal_year: ModelText
+    end_date: ModelText | None
+    days: int | None
+    case: Case | None
+
+
+class ModelTermsView(BaseModel):
+    """A facility's rate terms as the layout states them."""
+
+    model_config = _CLOSED
+
+    reference_rate: ModelText
+    spread_or_coupon: ModelText
+    floor: ModelText
+    maturity: ModelText
+    amortisation: ModelText
+
+
+class ModelLineView(BaseModel):
+    """One line of the model, in its band, with one cell per column."""
+
+    model_config = _CLOSED
+
+    line_id: ModelText
+    band: ModelText
+    label: ModelText
+    kind: LineKind
+    unit: LineUnit
+    unit_label: ModelText | None
+    rank: ModelText | None
+    terms: ModelTermsView | None
+    cells: Annotated[list[ModelCellView], Field(max_length=MODEL_COLUMNS_MAX)]
+
+
+class RateDeckRefView(BaseModel):
+    """The rate deck the run pinned at its creation, where a projection read
+    it."""
+
+    model_config = _CLOSED
+
+    deck_id: UUID
+    as_of: Annotated[str, Field(max_length=10, pattern=r"^\d{4}-\d{2}-\d{2}$")]
+
+
+class ModelBody(BaseModel):
+    """The credit model of the displayed run's accepted CP-1, with CP-2G and
+    CP-CF's projections where the route ran them, or empty before CP-1 is
+    accepted (spec M1). `forecast` is the accepted CP-CF record, kept for
+    comparison. Every line has exactly one cell per column."""
 
     model_config = _CLOSED
 
     case_id: UUID
     latest_run_id: UUID | None
     displayed_run_id: UUID | None
-    subject: RunSubjectView | None
     displayed_run_status: RunStatus | None
-    blocked_by: BlockedByView | None
-    forecast: ModelForecast | None
-    unavailable_reason: Literal["NO_ACCEPTED_FORECAST"] | None
-
-
-class BookColumn(BaseModel):
-    """One column of the book: a value the accepted projection already
-    carries. `unit` is what the cell's own figure is (N60): a plain
-    `Decimal` states a fraction (`0.20`) and a count identically, so the
-    cell has to be told which -- the calculator names its own margins and
-    coverage ratios, and the column declares that naming, never a guess
-    from the figure's magnitude."""
-
-    model_config = _CLOSED
-
-    key: Id
-    label: Text
-    unit: Literal["percent", "currency", "multiple", "count", "none"]
-
-
-class BookResearch(BaseModel):
-    """An accepted module artifact of the row's displayed run."""
-
-    model_config = _CLOSED
-
-    route_node_id: Id
-    module_id: Id
-    qa_status: Id
-
-
-class BookPassport(BaseModel):
-    """The ten fields a passport always carries, in its
-    order. Every one is read from the accepted record, the pinned run subject
-    or the host's declaration of its own calculator; none is a judgement about
-    the run. `scenario` is the accepted projection's own `case` -- the name
-    `caos-forecast-v1` gives a scenario, and the one
-    `caos/qualification/matrix.py` already reads as `ExpectedForecast.scenario`
-    -- so a base case and a downside are told apart in the field whose only job
-    is to tell them apart. The legacy spec's "evidence date" is served as
-    `reporting_period`, the analyst's declared period from the pinned subject,
-    because the host derives no date from any admitted document."""
-
-    model_config = _CLOSED
-
-    definition: Text
-    period: Text
-    scenario: Text
-    reporting_period: Text
-    computed_at: AwareDatetime
-    snapshot: Sha256
-    method: Text
-    derivation: Text
-    citations: Annotated[list[CitationView], Field(max_length=CITATIONS_MAX)]
-    supporting_research: Annotated[
-        list[BookResearch], Field(max_length=ROUTE_NODES_MAX)
+    subject: RunSubjectView | None
+    # What Add to Book binds (invariant 5): the digest of the accepted
+    # artifacts this body shows and every figure an entry stores of it
+    # (`caos.store.book.snapshot_sha256`). None with no grid served, in
+    # the view that excludes unrealised add-backs, and on a read under the
+    # desk-wide grant (spec B9), which offers no Add to Book.
+    snapshot_sha256: Sha256 | None
+    currency: ModelText | None
+    unit: ModelText | None
+    exclude_unrealised: StrictBool
+    rate_deck: RateDeckRefView | None
+    columns: Annotated[list[ModelColumnView], Field(max_length=MODEL_COLUMNS_MAX)]
+    lines: Annotated[list[ModelLineView], Field(max_length=MODEL_LINES_MAX)]
+    limitations: Annotated[
+        list[Annotated[str, Field(max_length=MODEL_LIMITATION_CHARS)]],
+        Field(max_length=MODEL_LIMITATIONS_MAX),
     ]
+    forecast: ModelForecast | None
+
+    @model_validator(mode="after")
+    def _one_cell_per_column(self) -> ModelBody:
+        if any(len(line.cells) != len(self.columns) for line in self.lines):
+            raise ValueError  # a line with a cell too many or too few
+        return self
 
 
-class BookCell(BaseModel):
-    model_config = _CLOSED
-
-    column: Id
-    value: Annotated[str, Field(max_length=64, pattern=r"^-?[0-9]+(\.[0-9]+)?$")] | None
-    unavailable_reason: Literal["ZERO_OR_NEGATIVE_DENOMINATOR"] | None
-    passport: BookPassport
-
-
-class BookPeriod(BaseModel):
-    model_config = _CLOSED
-
-    case: Text
-    period_id: Text
-    fiscal_year: Text
-    days: Annotated[str, Field(max_length=3, pattern=r"^[0-9]+$")]
-    unavailable_reason: Text | None
-    cells: Annotated[list[BookCell], Field(max_length=BOOK_COLUMNS_MAX)]
+# Plan 3 Task 2: an analyst-stated classification field (spec B5). The
+# vocabularies are `caos.book.classification`'s, judged by the command.
+CLASSIFICATION_CHARS = 64
+RATING_CHARS = 8
+# The longest agency outlook (`DEVELOPING`); the command judges the word.
+OUTLOOK_CHARS = max(len(outlook) for outlook in OUTLOOKS)
+WITHDRAWAL_NOTE_CHARS = 1000
+ClassificationText = Annotated[str, Field(max_length=CLASSIFICATION_CHARS)]
+Rating = Annotated[str, Field(max_length=RATING_CHARS)]
+Outlook = Annotated[str, Field(max_length=OUTLOOK_CHARS)]
 
 
-class BookRow(BaseModel):
-    """One credit, and why it carries no cells when it carries none.
-
-    `unavailable_reason` says no forecast is accepted; `refusal` is the typed
-    refusal this credit's own projection read raised. A refusal on one credit
-    never decides the others, so the book states it here rather than declining
-    the whole portfolio.
-    """
+class BookMetricView(BaseModel):
+    """A metric the Book's column chooser offers: one of the Model's own
+    book lines (`caos.api.reads.model.book_catalogue`), in the Model's
+    order."""
 
     model_config = _CLOSED
 
+    line_id: ModelText
+    label: ModelText
+    unit: LineUnit
+
+
+class BookEntryView(BaseModel):
+    """One book entry as stored (spec B10): the run's pinned subject, the
+    analyst-stated classification and its composite (spec B6), and the
+    metrics on each basis as the Add to Book command stored them.
+    `fiscal_years` names a projected basis' fiscal year, kept out of
+    `metrics` so every figure there is decimal text or null.
+    `snapshot_sha256` is the entry's stored digest, which Withdraw is bound
+    to. `filed` says the run's deliverable is filed (spec B4);
+    `sources_withdrawn` that a source pinned to the run is no longer live
+    (spec B8)."""
+
+    model_config = _CLOSED
+
+    entry_id: UUID
     case_id: UUID
-    title: Text
-    standing: Standing
-    subject: RunSubjectView | None
-    displayed_run_id: UUID | None
-    displayed_run_status: RunStatus | None
-    snapshot: Sha256 | None
-    # The projection's own units. A portfolio that compared credits without
-    # them would put two currencies in one column and say nothing.
-    currency: Annotated[str, Field(max_length=3, pattern="^[A-Z]{3}$")] | None
-    scale: Literal["units", "thousands", "millions", "billions"] | None
-    periods: Annotated[list[BookPeriod], Field(max_length=BOOK_PERIODS_MAX)]
-    unavailable_reason: Literal["NO_ACCEPTED_FORECAST"] | None
-    refusal: RefusalBody | None
+    run_id: UUID
+    issuer_key: Annotated[str, Field(max_length=128)]
+    issuer_id: Annotated[str, Field(max_length=128)]
+    issuer_name: Text
+    reporting_period: Text
+    analysis_date: Annotated[str, Field(max_length=10, pattern=r"^\d{4}-\d{2}-\d{2}$")]
+    route: Text
+    filed: StrictBool
+    sources_withdrawn: StrictBool
+    sector: ClassificationText
+    industry_group: ClassificationText | None
+    domicile: Annotated[str, Field(max_length=2)]
+    moodys: Rating | None
+    moodys_outlook: Outlook | None
+    sp: Rating | None
+    sp_outlook: Outlook | None
+    fitch: Rating | None
+    fitch_outlook: Outlook | None
+    composite: Rating
+    composite_bucket: Literal["IG", "BB", "B", "CCC_AND_BELOW", "NR"]
+    composite_notch: Annotated[int, Field(ge=1, le=22)] | None
+    currency: ModelText | None
+    unit: ModelText | None
+    metrics: Annotated[
+        dict[
+            Id,
+            Annotated[dict[Id, DecimalText | None], Field(max_length=MODEL_LINES_MAX)],
+        ],
+        Field(max_length=BOOK_BASES_MAX),
+    ]
+    fiscal_years: Annotated[
+        dict[Id, Annotated[str, Field(max_length=4, pattern=r"^[0-9]{4}$")]],
+        Field(max_length=BOOK_BASES_MAX),
+    ]
+    limitations: Annotated[
+        list[Annotated[str, Field(max_length=MODEL_LIMITATION_CHARS)]],
+        Field(max_length=MODEL_LIMITATIONS_MAX),
+    ]
+    snapshot_sha256: Sha256
+    added_at: AwareDatetime
+    withdrawn_at: AwareDatetime | None
+    withdrawal_reason: WithdrawalReason | None
+    withdrawal_note: Annotated[str, Field(max_length=WITHDRAWAL_NOTE_CHARS)] | None
+    # What this viewer may do to the entry: `WITHDRAW_BOOK_ENTRY` for a
+    # WRITER-or-above member of the entry's case (global role permitting)
+    # while it is live. Advisory; the command rechecks.
+    actions: Annotated[list[ActionName], Field(max_length=1)]
 
 
-class BookBasis(BaseModel):
-    """The one basis the comparison is stated on."""
+class BookIssuerView(BaseModel):
+    """One issuer's row (spec B1, B4): its newest live entry, and every
+    other entry it has, withdrawn ones included, newest first."""
 
     model_config = _CLOSED
 
-    period: Literal["EVERY_ACCEPTED_PERIOD"]
-    scenario: Literal["EVERY_ACCEPTED_CASE"]
-    accepted_only: Literal[True]
+    issuer_key: Annotated[str, Field(max_length=128)]
+    displayed: BookEntryView
+    history: Annotated[list[BookEntryView], Field(max_length=BOOK_HISTORY_MAX)]
 
 
 class BookBody(BaseModel):
+    """The desk-wide Book (spec B2, B15): every issuer with a live entry,
+    and the metrics the column chooser offers. The client filters and
+    sorts."""
+
     model_config = _CLOSED
 
-    basis: BookBasis
-    columns: Annotated[list[BookColumn], Field(max_length=BOOK_COLUMNS_MAX)]
-    rows: Annotated[list[BookRow], Field(max_length=BOOK_CASES_MAX)]
+    issuers: Annotated[list[BookIssuerView], Field(max_length=BOOK_ISSUERS_MAX)]
+    metric_catalogue: Annotated[list[BookMetricView], Field(max_length=MODEL_LINES_MAX)]
 
 
 class NarrativeFigure(BaseModel):
@@ -1868,6 +1996,113 @@ class DeliverableFiled(BaseModel):
     filed_by: UUID
 
 
+def _calendar_date(text: str) -> str:
+    """`text`, if it names a real day: `2026-02-30` matches the pattern and
+    is still refused. Not a schema keyword, so the browser checks the shape
+    and the server the calendar."""
+    date.fromisoformat(text)
+    return text
+
+
+# A calendar date in ISO form, as `ModelChoice.as_of` carries one.
+CalendarDate = Annotated[
+    str,
+    Field(max_length=10, pattern=r"^\d{4}-\d{2}-\d{2}$"),
+    AfterValidator(_calendar_date),
+]
+
+
+class RateDeckRateView(BaseModel):
+    """One row of a rate deck: a reference rate's Base and Downside rate for
+    one fiscal year after the last reported (FY+1 is 1). Rates are decimals
+    in plain notation (0.0380 is 3.80%); the store refuses one outside
+    (-1, 1) and a second row for the same rate and year."""
+
+    model_config = _CLOSED
+
+    reference_rate: Literal["SOFR", "TERM_SOFR", "EURIBOR", "SONIA"]
+    year_offset: Annotated[int, Field(ge=1, le=5)]
+    base_rate: DecimalText
+    downside_rate: DecimalText
+
+
+class SaveRateDeck(BaseModel):
+    """A global ADMIN's new rate deck. The saver is the actor, never a field;
+    the store refuses an empty deck (the browser's schema has no minimum)."""
+
+    model_config = _CLOSED
+
+    as_of: CalendarDate
+    rates: Annotated[list[RateDeckRateView], Field(max_length=RATE_DECK_ROWS_MAX)]
+
+
+class RateDeckSaved(BaseModel):
+    """The receipt for a saved deck."""
+
+    model_config = _CLOSED
+
+    deck_id: UUID
+
+
+class RateDeckView(BaseModel):
+    """The latest rate deck, as any signed-in user reads it; the route
+    answers `null` when none was ever saved."""
+
+    model_config = _CLOSED
+
+    deck_id: UUID
+    as_of: CalendarDate
+    saved_at: AwareDatetime
+    rates: Annotated[list[RateDeckRateView], Field(max_length=RATE_DECK_ROWS_MAX)]
+
+
+class AddToBook(BaseModel):
+    """Add a COMPLETE run with CP-1 accepted to the Book (spec B3, B5): the
+    snapshot digest of the accepted artifacts the actor reviewed (invariant
+    5) and the analyst-stated classification. The subject, the metrics, the
+    adder and the time are the host's, never fields."""
+
+    model_config = _CLOSED
+
+    snapshot_sha256: Sha256
+    sector: ClassificationText
+    industry_group: ClassificationText | None
+    domicile: Annotated[str, Field(max_length=2)]
+    moodys: Rating | None
+    moodys_outlook: Outlook | None
+    sp: Rating | None
+    sp_outlook: Outlook | None
+    fitch: Rating | None
+    fitch_outlook: Outlook | None
+
+
+class BookEntryAdded(BaseModel):
+    """The receipt for an added entry."""
+
+    model_config = _CLOSED
+
+    entry_id: UUID
+
+
+class WithdrawBookEntry(BaseModel):
+    """Withdraw an entry, never delete it (spec B7): bound to the entry's
+    snapshot digest, with a reason, and a note that `OTHER` requires."""
+
+    model_config = _CLOSED
+
+    snapshot_sha256: Sha256
+    reason: WithdrawalReason
+    note: Annotated[str, Field(max_length=WITHDRAWAL_NOTE_CHARS)] | None
+
+
+class BookEntryWithdrawn(BaseModel):
+    """The receipt for a withdrawn entry."""
+
+    model_config = _CLOSED
+
+    entry_id: UUID
+
+
 V1_COMMANDS: tuple[type[BaseModel], ...] = (
     CreateCase,
     CaseCreated,
@@ -1899,6 +2134,12 @@ V1_COMMANDS: tuple[type[BaseModel], ...] = (
     DeliverableFrozen,
     FileDeliverable,
     DeliverableFiled,
+    SaveRateDeck,
+    RateDeckSaved,
+    AddToBook,
+    BookEntryAdded,
+    WithdrawBookEntry,
+    BookEntryWithdrawn,
 )
 
 
@@ -1911,6 +2152,7 @@ def wire_schema() -> str:
         *V1_DOCUMENTS,
         PageDocument,
         QualificationRead,
+        RateDeckView,
         *V1_COMMANDS,
         RefusalBody,
     )

@@ -7,9 +7,11 @@ itself -- so each test here holds two.
 
 from __future__ import annotations
 
+import time
 from collections.abc import Callable
 from concurrent.futures import Future, ThreadPoolExecutor
 from dataclasses import dataclass, field
+from datetime import date, datetime
 from decimal import Decimal
 from functools import partial
 from pathlib import Path
@@ -31,8 +33,10 @@ from fake_chat import ScriptedChat, StatusError, fake_completions
 from run_terminals import fail_run
 from test_run_events import RECORD, accept_nodes, approved_nodes
 
+from caos.api.commands import rate_decks as rate_decks_command
 from caos.blobs import BlobStore
 from caos.boundary_text import BoundaryText
+from caos.calculators.credit_model.projection import RateDeckYear
 from caos.graph import runtime
 from caos.graph.route import NodeState, ResolvedRoute, resolve_route
 from caos.graph.runtime import Execution, Provider, ProviderResult, run_route
@@ -41,7 +45,15 @@ from caos.methodology.bundle import Bundle
 from caos.pricing import ModelPrice
 from caos.provider import Completion, CutAfterContentError, DropKind
 from caos.refusals import Refusal, RefusalCode
-from caos.store import RunStatus, StoreConnection, apply_schema, connect, runs
+from caos.store import (
+    RunStatus,
+    StoreConnection,
+    apply_schema,
+    connect,
+    rate_decks,
+    runs,
+)
+from caos.store.commands import NIL_SCOPE, record_receipt, request_digest
 from caos.store.events import RunEvent, events_of
 from caos.store.outcomes import (
     CallOutcome,
@@ -52,6 +64,7 @@ from caos.store.outcomes import (
     record_outcome,
     record_refusal,
 )
+from caos.store.rate_decks import deck_for_run, latest_deck, save_deck
 from caos.store.runs import (
     Accepted,
     accept_attempt,
@@ -1932,3 +1945,480 @@ def test_a_re_attempts_drop_billed_after_another_workers_read_makes_no_third_cal
         "SELECT state, stop_code FROM run_work WHERE run_id = %s", (run.run_id,)
     ).fetchone() == ("STOPPED", "PROVIDER_UNAVAILABLE")
     assert _events(run.conn, run.run_id, RunEvent.RUN_PARKED) == 1
+
+
+def _deck_rows(rate: str) -> tuple[RateDeckYear, ...]:
+    return (RateDeckYear("SOFR", 1, Decimal(rate), Decimal("0.0450")),)
+
+
+def _await_queued(observer: StoreConnection, *pids: int) -> None:
+    """Wait until every session in `pids` is queued for the save lock at once:
+    each has asked for it and not been granted it (`pg_locks`, one reading),
+    so each has read its bound and taken its place in the queue."""
+    deadline = time.monotonic() + 10
+    while time.monotonic() < deadline:
+        row = observer.execute(
+            "SELECT count(DISTINCT pid) FROM pg_catalog.pg_locks"
+            " WHERE locktype = 'advisory' AND NOT granted AND pid = ANY(%s)"
+            " AND classid = %s::integer::oid AND objid = 0 AND objsubid = 2",
+            (list(pids), rate_decks.SAVE_LOCK),
+        ).fetchone()
+        if row == (len(pids),):
+            return
+        time.sleep(0.01)
+    pytest.fail("a session never queued for the save lock")
+
+
+def _timed_save(saver: StoreConnection, caller: str | None) -> tuple[str, float]:
+    """One save on `saver` under the caller's `lock_timeout` (None: the
+    session's own), as its outcome -- the refusal's code or SAVED -- and how
+    long it took."""
+    if caller is not None:
+        saver.execute(f"SET LOCAL lock_timeout = '{caller}'")
+    began = time.monotonic()
+    try:
+        save_deck(saver, uuid4(), date(2026, 10, 1), _deck_rows("0.03"))
+    except Refusal as refused:
+        return refused.code.value, time.monotonic() - began
+    return "SAVED", time.monotonic() - began
+
+
+def test_two_deck_saves_are_stamped_in_commit_order(empty_database: str) -> None:
+    """ "Latest" moves only forward: a save that began first and committed
+    last is still the latest deck.
+
+    B's transaction is open before A saves, so a deck stamped with the
+    transaction's start (`now()`) would put B before A although B committed
+    after it -- and the deck the admin saved last would never be the latest.
+    B instead waits at the save lock while A holds it, and is stamped with the
+    clock read under the lock, so `saved_at` order is commit order."""
+    with connect(empty_database) as first, connect(empty_database) as second:
+        apply_schema(first)
+        first.commit()
+        second.execute("SELECT 1")  # B's transaction is open from here
+        a = save_deck(first, uuid4(), date(2026, 10, 1), _deck_rows("0.0380"))
+        b_saved = Event()
+
+        def save_second() -> UUID:
+            deck = save_deck(second, uuid4(), date(2026, 10, 2), _deck_rows("0.04"))
+            b_saved.set()
+            second.commit()
+            return deck
+
+        with ThreadPoolExecutor(max_workers=1) as pool:
+            b = pool.submit(save_second)
+            assert not b_saved.wait(1), "B saved while A held the save lock"
+            first.commit()
+            b_deck = b.result(30)
+
+        latest = latest_deck(first)
+        assert latest is not None and latest.deck_id == str(b_deck)
+        stamps: dict[UUID, datetime] = dict(
+            first.execute("SELECT deck_id, saved_at FROM rate_decks").fetchall()
+        )
+        assert stamps[b_deck] > stamps[a]
+
+
+def test_twin_deck_saves_under_one_key_keep_one_deck(empty_database: str) -> None:
+    """One deck per key, whatever the interleaving.
+
+    A has saved its deck and receipt and not committed. B, the same request
+    under the same key, misses the receipt lookup and waits at the save lock;
+    once A commits, B's receipt insert finds the key taken, B's whole unit
+    (its deck included) is rolled back, and B replays A's receipt."""
+    actor, key = uuid4(), uuid4()
+    rows = _deck_rows("0.0380")
+    digest = request_digest(
+        rate_decks_command.SAVE_RATE_DECK,
+        case_id=None,
+        run_id=None,
+        gate=None,
+        body={"as_of": "2026-10-01"},
+    )
+    request = rate_decks_command.DeckRequest(
+        actor, key, digest, date(2026, 10, 1), rows
+    )
+    with connect(empty_database) as first, connect(empty_database) as second:
+        apply_schema(first)
+        first.commit()
+        deck = save_deck(first, actor, date(2026, 10, 1), rows)
+        receipt = {"deck_id": str(deck)}
+        assert record_receipt(
+            first,
+            actor_id=actor,
+            scope=NIL_SCOPE,
+            key=key,
+            command=rate_decks_command.SAVE_RATE_DECK,
+            request_sha256=digest,
+            status=201,
+            receipt=receipt,
+        )
+        with ThreadPoolExecutor(max_workers=1) as pool:
+            twin = pool.submit(rate_decks_command.saved_deck, second, request)
+            with pytest.raises(TimeoutError):
+                twin.result(1)
+            first.commit()
+            replayed = twin.result(30)
+
+        assert (replayed.status, replayed.receipt, replayed.replayed) == (
+            201,
+            receipt,
+            True,
+        )
+        assert first.execute("SELECT deck_id FROM rate_decks").fetchall() == [(deck,)]
+
+
+def test_a_run_started_while_a_deck_save_is_in_flight_pins_that_deck(
+    empty_database: str,
+) -> None:
+    """A run's pin waits for a save in flight (the save lock, taken shared),
+    so a deck that commits before the run does is never missed: without the
+    wait the run would pin the deck before it although the newer one had
+    committed first."""
+    with connect(empty_database) as runner, connect(empty_database) as saver:
+        apply_schema(runner)
+        case_id = create_case(runner, BoundaryText.of("Issuer"))
+        runner.commit()
+        save_deck(saver, uuid4(), date(2026, 9, 1), _deck_rows("0.0300"))
+        saver.commit()
+        newer = save_deck(saver, uuid4(), date(2026, 10, 1), _deck_rows("0.0400"))
+        started = Event()
+
+        def start() -> UUID:
+            run_id = start_run(runner, case_id)
+            started.set()
+            runner.commit()
+            return run_id
+
+        with ThreadPoolExecutor(max_workers=1) as pool:
+            future = pool.submit(start)
+            assert not started.wait(1), "the pin did not wait for the save"
+            saver.commit()
+            run_id = future.result(30)
+
+        pinned = deck_for_run(runner, run_id)
+        assert pinned is not None and pinned.deck_id == str(newer)
+
+
+def test_a_run_start_queued_behind_a_waiting_save_gives_up_typed(
+    empty_database: str, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A run unit held open (its pin holds the save lock shared) makes a save
+    wait; every later pin queues behind that save. The pin's wait is bounded
+    (`LOCK_TIMEOUT_MS`), so a run start on another case is refused
+    `STORE_UNAVAILABLE` -- retryable -- rather than queued for as long as the
+    first unit stays open; and the bound does not outlive the wait. The save
+    is given a long bound (read when its wait begins) so it is still queued
+    when the pin's short one runs out."""
+    monkeypatch.setattr(rate_decks, "LOCK_TIMEOUT_MS", 30_000)
+    with (
+        connect(empty_database) as holder,
+        connect(empty_database) as saver,
+        connect(empty_database) as other,
+    ):
+        apply_schema(holder)
+        first = create_case(holder, BoundaryText.of("one"))
+        second = create_case(holder, BoundaryText.of("two"))
+        holder.commit()
+        before = other.execute("SHOW lock_timeout").fetchone()
+        other.rollback()
+        start_run(holder, first)  # holds the save lock shared, uncommitted
+        with ThreadPoolExecutor(max_workers=1) as pool:
+            saving = pool.submit(
+                lambda: save_deck(saver, uuid4(), date(2026, 10, 1), _deck_rows("0.03"))
+            )
+            try:
+                _await_queued(holder, saver.info.backend_pid)
+                monkeypatch.setattr(rate_decks, "LOCK_TIMEOUT_MS", 300)
+                with pytest.raises(Refusal, match=r"^STORE_UNAVAILABLE$"):
+                    start_run(other, second)
+                other.rollback()
+            finally:
+                # Released whatever was asserted, so a failure ends the save
+                # rather than leaving this test waiting on it.
+                holder.commit()
+            saving.result(30)
+            saver.commit()
+        # Unqueued, the same start succeeds, and the session's own bound is
+        # what it was.
+        run_id = start_run(other, second)
+        assert other.execute("SHOW lock_timeout").fetchone() == before
+        other.commit()
+        assert deck_for_run(other, run_id) is not None
+
+
+def test_two_concurrent_adds_of_one_run_leave_one_entry(
+    empty_database: str, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Two writers add one complete run to the Book at once, each under its
+    own key and connection. The case lock orders them: the second finds the
+    first's live entry and is refused stale, so one entry is written and the
+    case chain holds one BOOK_ENTRY_ADDED."""
+    import inspect
+    from types import SimpleNamespace
+    from typing import cast
+
+    from test_execution_freshness import _Harness
+    from test_forecast_route import harness
+    from test_forecast_route import route as forecast_route
+    from test_model_section import _complete
+
+    from caos.api.commands import book as book_command
+    from caos.api.identity import Actor, GlobalRole
+    from caos.api.reads.model import read_model
+    from caos.api.wire import AddToBook
+    from caos.store.audit import audit_trail, verify_chain
+    from caos.store.members import Standing, grant
+
+    make_route = cast(
+        Callable[[pytest.MonkeyPatch, object], ResolvedRoute],
+        inspect.unwrap(forecast_route),
+    )
+    make_harness = cast(
+        Callable[[tuple[StoreConnection, UUID], Path, ResolvedRoute], _Harness],
+        inspect.unwrap(harness),
+    )
+    with connect(empty_database) as conn:
+        apply_schema(conn)
+        case_id = create_case(conn, BoundaryText.of("Issuer"))
+        conn.commit()
+        held = make_harness(
+            (conn, case_id), tmp_path, make_route(monkeypatch, SimpleNamespace())
+        )
+        _complete(held)
+        writers = [uuid4(), uuid4()]
+        for writer in writers:
+            grant(conn, case_id=case_id, user_id=writer, standing=Standing.WRITER)
+        conn.commit()
+        # The digest the Model read serves the analyst who adds.
+        shown = read_model(
+            Actor(writers[0], GlobalRole.ANALYST),
+            case_id,
+            held.run_id,
+            False,
+            Standing.WRITER,
+            conn,
+            held.blobs.remembering(),
+            held.bundle,
+        )
+        assert shown.body.snapshot_sha256 is not None
+        body = AddToBook(
+            snapshot_sha256=shown.body.snapshot_sha256,
+            sector="Energy",
+            industry_group=None,
+            domicile="US",
+            moodys=None,
+            moodys_outlook=None,
+            sp="BB",
+            sp_outlook="STABLE",
+            fitch=None,
+            fitch_outlook=None,
+        )
+        conn.commit()
+        barrier = Barrier(2)
+
+        def add(writer: UUID) -> str:
+            with connect(empty_database) as other:
+                asked = book_command.Asked(
+                    Actor(writer, GlobalRole.ANALYST), uuid4(), case_id, Standing.WRITER
+                )
+                stores = book_command.Stores(
+                    other, held.blobs.remembering(), held.bundle
+                )
+                barrier.wait(10)
+                try:
+                    answer = book_command.add_to_book(asked, held.run_id, body, stores)
+                except Refusal as refused:
+                    return refused.code.value
+                return str(answer.status_code)
+
+        with ThreadPoolExecutor(max_workers=2) as pool:
+            outcomes = sorted(pool.map(add, writers))
+        assert outcomes == ["201", "COMMAND_EXPECTATION_STALE"]
+        assert conn.execute(
+            "SELECT count(*) FROM book_entries WHERE run_id = %s", (held.run_id,)
+        ).fetchone() == (1,)
+        actions = [entry.action for entry in audit_trail(conn, case_id)]
+        assert actions.count("BOOK_ENTRY_ADDED") == 1
+        assert verify_chain(conn, case_id)
+
+
+@pytest.mark.parametrize(("caller", "pin_ms"), [("250ms", 5000), ("10s", 300)])
+def test_the_pin_bound_only_ever_tightens_the_callers(
+    empty_database: str, monkeypatch: pytest.MonkeyPatch, caller: str, pin_ms: int
+) -> None:
+    """A caller's tighter `lock_timeout` stands (refused near 250 ms, not
+    after the pin's 5 s); a looser one is tightened to the pin's bound. Either
+    way the caller's own setting is what is left after a pin that succeeds.
+    The save queued ahead of the pin waits under a long bound, read when its
+    wait begins."""
+    monkeypatch.setattr(rate_decks, "LOCK_TIMEOUT_MS", 30_000)
+    with (
+        connect(empty_database) as holder,
+        connect(empty_database) as saver,
+        connect(empty_database) as other,
+    ):
+        apply_schema(holder)
+        first = create_case(holder, BoundaryText.of("one"))
+        second = create_case(holder, BoundaryText.of("two"))
+        holder.commit()
+        start_run(holder, first)  # holds the save lock shared, uncommitted
+        with ThreadPoolExecutor(max_workers=1) as pool:
+            saving = pool.submit(
+                lambda: save_deck(saver, uuid4(), date(2026, 10, 1), _deck_rows("0.03"))
+            )
+            try:
+                _await_queued(holder, saver.info.backend_pid)
+                monkeypatch.setattr(rate_decks, "LOCK_TIMEOUT_MS", pin_ms)
+                other.execute(f"SET LOCAL lock_timeout = '{caller}'")
+                began = time.monotonic()
+                with pytest.raises(Refusal, match=r"^STORE_UNAVAILABLE$"):
+                    start_run(other, second)
+                waited = time.monotonic() - began
+                other.rollback()
+            finally:
+                holder.commit()
+            saving.result(30)
+            saver.commit()
+        assert waited < 2, waited
+        other.execute(f"SET LOCAL lock_timeout = '{caller}'")
+        start_run(other, second)
+        assert other.execute("SHOW lock_timeout").fetchone() == (caller,)
+        other.rollback()
+
+
+# (the caller's own bound, the module's, the wait the tighter of them makes)
+_SAVE_BOUNDS = [(None, 300, 300), ("10s", 300, 300), ("200ms", 5000, 200)]
+
+
+@pytest.mark.parametrize(("caller", "bound_ms", "waits_ms"), _SAVE_BOUNDS)
+def test_a_save_queued_behind_a_run_unit_gives_up_typed(
+    empty_database: str,
+    monkeypatch: pytest.MonkeyPatch,
+    caller: str | None,
+    bound_ms: int,
+    waits_ms: int,
+) -> None:
+    """A run unit held open holds the save lock shared (its pin). A save
+    waiting for it exclusively queues every later pin behind it, so an
+    unbounded wait holds every run start for as long as that one unit stays
+    open. The save's wait is bounded as the pin's is (`LOCK_TIMEOUT_MS`,
+    or the caller's tighter bound, which stands): it waits the bound, is
+    refused `STORE_UNAVAILABLE` -- retryable -- having written nothing, and
+    the run unit commits unaffected. A save that waits past the bound fails
+    here rather than hanging: the holder is released whatever was asserted."""
+    monkeypatch.setattr(rate_decks, "LOCK_TIMEOUT_MS", bound_ms)
+    with connect(empty_database) as holder, connect(empty_database) as saver:
+        apply_schema(holder)
+        case_id = create_case(holder, BoundaryText.of("Issuer"))
+        holder.commit()
+        before = saver.execute("SHOW lock_timeout").fetchone()
+        saver.rollback()
+        run_id = start_run(holder, case_id)  # holds the save lock shared
+
+        with ThreadPoolExecutor(max_workers=1) as pool:
+            saving = pool.submit(_timed_save, saver, caller)
+            try:
+                outcome, waited = saving.result(3)
+            finally:
+                holder.commit()
+        assert outcome == "STORE_UNAVAILABLE"
+        assert waits_ms / 1000 <= waited < 2, waited
+        saver.rollback()
+
+        # The refused save wrote nothing; the run committed with its pin
+        # (none: there was no deck), and the unqueued save then succeeds,
+        # leaving the unit's own bound as it was.
+        assert holder.execute("SELECT count(*) FROM rate_decks").fetchone() == (0,)
+        assert deck_for_run(holder, run_id) is None
+        holder.rollback()
+        deck = save_deck(saver, uuid4(), date(2026, 10, 1), _deck_rows("0.03"))
+        assert saver.execute("SHOW lock_timeout").fetchone() == before
+        saver.commit()
+        latest = latest_deck(saver)
+        assert latest is not None and latest.deck_id == str(deck)
+        saver.rollback()
+
+
+@pytest.mark.parametrize("table", ["rate_decks", "rate_deck_rates"])
+@pytest.mark.parametrize("bounds", _SAVE_BOUNDS)
+def test_a_save_held_by_a_table_lock_gives_up_typed(
+    empty_database: str,
+    monkeypatch: pytest.MonkeyPatch,
+    table: str,
+    bounds: tuple[str | None, int, int],
+) -> None:
+    """A save holds the save lock exclusively from its lock to its unit's end,
+    so a save held at its writes -- by a table lock a migration or an
+    operator holds -- holds every run start behind it. The save's bound stays
+    in force through its last statement: held at either write it waits the
+    bound and is refused `STORE_UNAVAILABLE` -- retryable -- and its unit,
+    rolled back, has written nothing. A save that waits past the bound fails
+    here rather than hanging: the holder is released whatever was asserted."""
+    caller, bound_ms, waits_ms = bounds
+    monkeypatch.setattr(rate_decks, "LOCK_TIMEOUT_MS", bound_ms)
+    with connect(empty_database) as holder, connect(empty_database) as saver:
+        apply_schema(holder)
+        holder.commit()
+        before = saver.execute("SHOW lock_timeout").fetchone()
+        saver.rollback()
+        holder.execute(f"LOCK TABLE {table} IN SHARE MODE")
+
+        with ThreadPoolExecutor(max_workers=1) as pool:
+            saving = pool.submit(_timed_save, saver, caller)
+            try:
+                outcome, waited = saving.result(3)
+            finally:
+                holder.rollback()
+        assert outcome == "STORE_UNAVAILABLE"
+        assert waits_ms / 1000 <= waited < 2, waited
+        saver.rollback()
+
+        assert saver.execute("SHOW lock_timeout").fetchone() == before
+        written = saver.execute(
+            "SELECT (SELECT count(*) FROM rate_decks),"
+            " (SELECT count(*) FROM rate_deck_rates)"
+        ).fetchone()
+        assert written == (0, 0)
+        saver.rollback()
+
+
+def test_a_pin_queued_behind_a_waiting_save_is_granted_when_the_save_gives_up(
+    empty_database: str, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """One run unit held open holds a save, and the pins queued behind it,
+    for about one bound -- not for as long as it stays open. When the queued
+    save gives up, the pin behind it is granted (shared, beside the holder's
+    shared) and its run starts while the holder is still open. The pin is
+    given a long bound (read when its wait begins), so it is granted, not
+    refused, after the save's short one runs out."""
+    monkeypatch.setattr(rate_decks, "LOCK_TIMEOUT_MS", 2000)
+    with (
+        connect(empty_database) as holder,
+        connect(empty_database) as saver,
+        connect(empty_database) as other,
+    ):
+        apply_schema(holder)
+        first = create_case(holder, BoundaryText.of("one"))
+        second = create_case(holder, BoundaryText.of("two"))
+        holder.commit()
+        start_run(holder, first)  # holds the save lock shared, uncommitted
+        with ThreadPoolExecutor(max_workers=2) as pool:
+            saving = pool.submit(_timed_save, saver, None)
+            try:
+                _await_queued(holder, saver.info.backend_pid)
+                monkeypatch.setattr(rate_decks, "LOCK_TIMEOUT_MS", 30_000)
+                starting = pool.submit(start_run, other, second)
+                # Both waiting at once: the pin is queued behind the save.
+                _await_queued(holder, saver.info.backend_pid, other.info.backend_pid)
+                outcome, _waited = saving.result(10)
+                # Granted with the holder still open: the save giving up
+                # released the queue, not the holder's commit.
+                run_id = starting.result(10)
+            finally:
+                holder.commit()
+        assert outcome == "STORE_UNAVAILABLE"
+        saver.rollback()
+        other.commit()
+        assert deck_for_run(other, run_id) is None
+        other.rollback()

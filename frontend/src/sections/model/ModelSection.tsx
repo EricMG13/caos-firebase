@@ -1,10 +1,19 @@
-// The accepted CP-CF projection, read only. Values are server strings: this
-// view deliberately performs no model arithmetic or evidence navigation.
+// The credit model and the accepted CP-CF projection, read only. Values are
+// server strings: this view deliberately performs no model arithmetic or
+// evidence navigation beyond the passport a cell opens. The credit model is the
+// grid (`ModelGrid`); the accepted CP-CF forecast follows it.
+import { useCallback } from "react";
 import { LineChart, type ChartSeries } from "@/charts";
+import { fetchSection } from "@/app/transport";
+import { useDocumentRefetch } from "@/app/useDocumentRefetch";
 import { NoteRows } from "@/ds/atoms";
 import type { ModelDocument } from "@/wire/v1";
 import { displayDecimal } from "@/ds/format";
 import { Digest } from "@/ds/Digest";
+import { useSearchParams } from "react-router";
+import { ChartStrip } from "./ChartStrip";
+import { AddToBook } from "./AddToBook";
+import { ModelGrid } from "./ModelGrid";
 
 type Forecast = NonNullable<ModelDocument["body"]["forecast"]>;
 type ForecastValue = Forecast["periods"][number]["values"][number];
@@ -117,30 +126,158 @@ export function forecastSeries(
   });
 }
 
-export function ModelSection({ document }: { document: ModelDocument; tab: string | null }) {
+type ModelBody = ModelDocument["body"];
+
+/** What the grid is read in: its unit, the rate deck its interest was priced
+    at, the unrealised add-backs switch, and the model's limitations. The
+    limitations stand on their own: a document whose CP-1 could not be read has
+    them and an accepted forecast but no line. */
+function ModelHeader({
+  body,
+  addToBook,
+  onAdded,
+}: {
+  body: ModelBody;
+  /** Whether the document offers Add to Book (`chrome.actions`). */
+  addToBook: boolean;
+  onAdded: () => void;
+}) {
+  const [params, setParams] = useSearchParams();
+  const excluded = params.get("exclude_unrealised") === "1";
+  const setExcluded = (on: boolean) =>
+    setParams(
+      (current) => {
+        const next = new URLSearchParams(current);
+        if (on) next.set("exclude_unrealised", "1");
+        else next.delete("exclude_unrealised");
+        return next;
+      },
+      { replace: true },
+    );
+  const hasModel = body.lines.length > 0;
+  return (
+    <section className="pnl" data-model-header>
+      <header>
+        <h2>Credit model</h2>
+        <span className="tag" data-model-unit>
+          {[body.currency, body.unit?.toLowerCase()].filter(Boolean).join(" ") || "no model"}
+        </span>
+        {hasModel ? (
+          <span className="tag" data-model-deck>
+            {body.rate_deck ? `rate deck ${body.rate_deck.as_of}` : "no rate deck"}
+          </span>
+        ) : null}
+        {/* Offered by the server to a writer on a complete default view, and
+            drawn only with the digest it binds and the run's subject. */}
+        {addToBook && body.snapshot_sha256 && body.subject && body.displayed_run_id ? (
+          <span className="ml-auto">
+            <AddToBook
+              caseId={body.case_id}
+              runId={body.displayed_run_id}
+              digest={body.snapshot_sha256}
+              issuerId={body.subject.issuer_id}
+              issuerName={body.subject.issuer_name}
+              onAdded={onAdded}
+            />
+          </span>
+        ) : null}
+      </header>
+      <div className="pb">
+        {hasModel ? (
+          <label className="check">
+            <input
+              type="checkbox"
+              checked={excluded}
+              onChange={(event) => setExcluded(event.target.checked)}
+            />{" "}
+            Exclude unrealised add-backs
+          </label>
+        ) : null}
+        <dl className="kv">
+          <NoteRows label="Model limitations" values={body.limitations} data-model-limitations />
+        </dl>
+      </div>
+    </section>
+  );
+}
+
+/** A `ModelBody` is the only enabled-section body carrying a rate deck. */
+function isModelDocument(document: { body: object }): document is ModelDocument {
+  return "rate_deck" in document.body;
+}
+
+export function ModelSection({
+  document: served,
+}: {
+  document: ModelDocument;
+  tab: string | null;
+}) {
+  const { live: document, failed, refetch } = useDocumentRefetch(served);
+  const [params] = useSearchParams();
+  const excludeUnrealised = params.get("exclude_unrealised");
   const { body } = document;
+  const caseId = body.case_id;
+  const runId = body.displayed_run_id;
+  // The entry exists now and the offer is gone: read the Model again, once.
+  const reread = useCallback(
+    () =>
+      void refetch(async () => {
+        const status = await fetchSection("model", {
+          case: caseId,
+          run: runId,
+          excludeUnrealised,
+        });
+        return "document" in status && isModelDocument(status.document) ? status.document : null;
+      }),
+    [refetch, caseId, runId, excludeUnrealised],
+  );
+  const credit = (
+    <>
+      <ModelHeader
+        body={body}
+        addToBook={document.chrome.actions.some((view) => view.action === "ADD_TO_BOOK")}
+        onAdded={reread}
+      />
+      {failed ? (
+        <p className="note warn" role="alert" data-model-refresh-failed>
+          The entry was added, but the Model could not be read again. Reload to see it.
+        </p>
+      ) : null}
+      {body.lines.length ? (
+        <section className="pnl" data-model-lines>
+          <div className="pb flush">
+            <ModelGrid body={body} observedAt={document.observed_at} />
+          </div>
+        </section>
+      ) : null}
+      {body.lines.length ? <ChartStrip body={body} /> : null}
+    </>
+  );
   const forecast = body.forecast;
   if (!forecast) {
     return (
-      <section className="pnl" data-model-v1 data-run={body.displayed_run_id ?? ""}>
-        <header>
-          <h2>Model</h2>
-          <span className="cp">CP-CF</span>
-        </header>
-        {/* Why there is none, not only that there is none: an ended run is not
-            waiting for a forecast, and a verdict that ended it has a name. */}
-        <div className="pb note" data-model-unavailable>
-          {body.unavailable_reason}
-          {body.displayed_run_status !== null && body.displayed_run_status !== "RUNNING"
-            ? ` · the run ended ${body.displayed_run_status}`
-            : ""}
-          {body.blocked_by ? ` on ${body.blocked_by.module_id}` : ""}
-        </div>
-      </section>
+      <div className="col" data-model-v1 data-run={body.displayed_run_id ?? ""}>
+        {credit}
+        <section className="pnl">
+          <header>
+            <h2>Model</h2>
+            <span className="cp">CP-CF</span>
+          </header>
+          {/* Whether one is still coming: an ended run is not waiting for a
+              forecast. */}
+          <div className="pb note" data-model-unavailable>
+            No accepted CP-CF forecast
+            {body.displayed_run_status !== null && body.displayed_run_status !== "RUNNING"
+              ? ` · the run ended ${body.displayed_run_status}`
+              : ""}
+          </div>
+        </section>
+      </div>
     );
   }
   return (
     <div className="col" data-model-v1 data-run={body.displayed_run_id ?? ""}>
+      {credit}
       <section className="pnl">
         <header>
           <h2>Accepted forecast</h2>

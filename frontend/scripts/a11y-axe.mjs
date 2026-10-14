@@ -13,6 +13,7 @@ import { dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 import { chromium, firefox, webkit } from "playwright";
 import { summarizeAxeViolations } from "./axe-results.mjs";
+import { gotoWithInternalErrorRetry } from "./a11y-navigation.mjs";
 import { ENGINES, LOADING, ROUTES, SETTLED, VIEWPORTS } from "./fixture-routes.mjs";
 
 const require = createRequire(import.meta.url);
@@ -119,7 +120,9 @@ const LAYOUT_PROBE = () => {
     ),
   ]
     .filter(visible)
-    .filter((element) => !element.matches(":disabled"));
+    .filter((element) => !element.matches(":disabled"))
+    // A modal's focus guards are 1px and clipped away: not a target anyone aims at.
+    .filter((element) => !element.matches("[data-base-ui-focus-guard]"));
   const describe = (element, dimensions) => ({
     tag: element.tagName.toLowerCase(),
     label: (element.getAttribute("aria-label") || element.textContent || "")
@@ -182,7 +185,10 @@ function layoutFails(layout) {
 
 async function scan(page, route, viewport) {
   await page.setViewportSize(viewport);
-  await page.goto(BASE + route, { waitUntil: "domcontentloaded", timeout: 30_000 });
+  await gotoWithInternalErrorRetry(page, BASE + route, {
+    waitUntil: "domcontentloaded",
+    timeout: 30_000,
+  });
   try {
     await page.locator("main#body").waitFor({ state: "attached", timeout: 15_000 });
     await page.locator(LOADING).waitFor({ state: "detached", timeout: 15_000 });
@@ -210,6 +216,38 @@ async function scan(page, route, viewport) {
         .first()
         .getAttribute("value");
       await picker.selectOption(value ?? "");
+    }
+    // A dialog or panel a route names is opened, and waited for, before the
+    // scan; one that cannot be opened is a scan error.
+    const dialog = params.get("dialog");
+    if (dialog === "add-to-book") {
+      await page.locator("[data-add-to-book]").first().click();
+      await page.locator("[data-add-to-book-form]").waitFor({ state: "visible", timeout: 15_000 });
+      // Visible is not settled: the dialog fades in over 200 ms and Playwright
+      // counts opacity 0 as visible. Wait, bounded, until its entrance has
+      // finished so axe never measures contrast mid-fade; a dialog that never
+      // settles times out into the scan error below.
+      await page.waitForFunction(
+        () => {
+          const form = document.querySelector("[data-add-to-book-form]");
+          const root = form?.closest('[role="dialog"]') ?? form;
+          return (
+            root !== null &&
+            root !== undefined &&
+            root.getAnimations({ subtree: true }).every((a) => a.playState === "finished") &&
+            getComputedStyle(root).opacity === "1"
+          );
+        },
+        undefined,
+        { timeout: 15_000 },
+      );
+    } else if (dialog === "withdraw") {
+      await page.locator('button[aria-label^="Withdraw "]').first().click();
+      await page
+        .locator("[data-withdraw-displayed]")
+        .waitFor({ state: "visible", timeout: 15_000 });
+    } else if (dialog) {
+      throw new Error(`unknown dialog "${dialog}"`);
     }
     const arm = params.get("arm");
     if (arm) {

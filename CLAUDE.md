@@ -23,6 +23,7 @@ The build contract is `docs/specs/2026-10-04-firebase-design.md`; decisions are
   02181a7): runbook hardening (H1), shutdown inside Cloud Run's grace (H2, FD20),
   user-provisioning script (H3, FD19), blob-write check on the mount (H4), Architecture
   Center items A1-A5 and A7 (H5).
+- **Sync 1** (2026-10-14): merged upstream `rebuild/databricks` at b13110e545ebbc9b74bc7efd3dd3388afb6c0fc5; the gate-config baseline `$B` for `check_gate_config --against` is now that merged upstream tip.
 - **Phase 2 is dropped** (FD17): the Databricks code is not deleted, so upstream merges
   stay clean.
 - **Firebase project:** `caos-firebase-prod`.
