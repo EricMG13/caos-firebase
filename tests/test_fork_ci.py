@@ -45,6 +45,14 @@ def _runs(node: object) -> Iterator[str]:
             yield from _runs(item)
 
 
+def _triggers(doc: object) -> dict[str, object] | str | list[str]:
+    """The `on:` triggers; YAML 1.1 (PyYAML) reads a bare `on` key as True."""
+    assert isinstance(doc, dict)
+    triggers = doc["on"] if "on" in doc else doc.get(True)
+    assert isinstance(triggers, dict | str | list)
+    return triggers
+
+
 def _parsed(name: str) -> object:
     return yaml.safe_load((CI_DIR / name).read_text(encoding="utf-8"))
 
@@ -75,18 +83,18 @@ def test_permissions_are_declared(name: str) -> None:
 
 @pytest.mark.parametrize("name", FORK_FILES)
 def test_no_pull_request_target_trigger(name: str) -> None:
-    doc = _parsed(name)
-    assert isinstance(doc, dict)
-    triggers = doc.get("on", doc.get(True))  # YAML 1.1 reads a bare `on` as True
-    assert triggers is not None
-    assert "pull_request_target" not in triggers
+    assert "pull_request_target" not in _triggers(_parsed(name))
 
 
 def test_the_guards_see_a_violation() -> None:
     assert list(_runs({"steps": [{"run": "echo ${{ x }}"}, {"uses": "a/b@c"}]})) == [
         "echo ${{ x }}"
     ]
-    assert "pull_request_target" in {"pull_request_target": None}
+    bad = yaml.safe_load("on:\n  push:\n  pull_request_target:\njobs: {}\n")
+    assert "pull_request_target" in _triggers(bad)
+    assert "pull_request_target" in _triggers(
+        yaml.safe_load("on: pull_request_target\n")
+    )
 
 
 def test_a_tag_or_a_short_sha_is_not_a_pin() -> None:

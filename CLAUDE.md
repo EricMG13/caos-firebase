@@ -45,16 +45,10 @@ fork's `@firebase/app` and `@firebase/auth` pins with `--ignore-scripts`, run
 `npm --prefix frontend audit fix --package-lock-only --ignore-scripts` if audit flags
 anything, then `npm --prefix frontend audit --omit=dev` must exit 0.
 
-The weekly `upstream-sync` workflow (`.github/workflows/upstream-sync.yml`, Monday
-06:00 UTC, or run it by hand) does the merge step: it opens a `sync/<date>` PR to `main`,
-or, when the merge conflicts, an issue "Upstream sync conflict <date>" listing the files
-(resolve locally by the rule above). When upstream changed `.github/workflows/*` the
-workflow also opens the issue instead of pushing: no token it has may push workflow
-changes. Set the repository secret `SYNC_TOKEN` (a fine-grained PAT with contents, pull
-requests and issues write on this repo, and explicitly WITHOUT the Workflows permission:
-with it, a pushed upstream `on: push` workflow could run with the repo's secrets) so the
-PR triggers CI; without it the workflow uses `GITHUB_TOKEN`, and GitHub starts no
-workflow runs for events that token causes, so CI must be re-run by the owner.
+The weekly `upstream-sync` workflow (Monday 06:00 UTC, or by hand) opens a `sync/<date>`
+PR to `main`, or an issue when the merge conflicts or upstream changed
+`.github/workflows/*`. SYNC_TOKEN: contents/pull requests/issues write, never Workflows;
+see the workflow header.
 
 ## Repo map (after the fork)
 

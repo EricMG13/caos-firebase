@@ -23,8 +23,8 @@ ALL=0
 DRY=0
 KEEPDB=0
 LOG=""
-# Upstream gate-config baseline commit (CLAUDE.md "$B"); override with FORK_GATE_B.
-GATE_B="${FORK_GATE_B:-d07fea550d33c42ece390aad970d7ca994b9c406}"
+# Upstream gate-config baseline commit (CLAUDE.md "$B").
+GATE_B=d07fea550d33c42ece390aad970d7ca994b9c406
 
 usage() { sed -n '2,19p' "$0" | sed 's/^# \{0,1\}//' >&2; exit 2; }
 
@@ -51,22 +51,19 @@ add() { PLAN+=("$1|$2|$3|$4"); }
 
 have_base() { git rev-parse --verify --quiet "$BASE^{commit}" >/dev/null 2>&1; }
 
-changed_files() {
-  { git diff --name-only "$BASE...HEAD" 2>/dev/null
-    git diff --name-only HEAD 2>/dev/null
-    git ls-files --others --exclude-standard 2>/dev/null; } | sort -u | while read -r f; do
-    [ -e "$f" ] && echo "$f"
-  done
-}
-
-# Same set as changed_files (committed vs base, uncommitted, untracked) but a failing
-# git diff fails the function instead of yielding an empty set.
+# Changed set: committed vs base, uncommitted, untracked. A failing git diff fails the
+# function instead of yielding an empty set.
 changed_files_strict() {
   local a b c
   a=$(git diff --name-only "$BASE...HEAD") || return 1
   b=$(git diff --name-only HEAD) || return 1
   c=$(git ls-files --others --exclude-standard) || return 1
   printf '%s\n%s\n%s\n' "$a" "$b" "$c" | sort -u
+}
+
+# The same set minus files deleted from the tree.
+changed_files() {
+  changed_files_strict | while read -r f; do [ -e "$f" ] && echo "$f"; done
 }
 
 quoted() { local out="" f; for f in "$@"; do out="$out $(printf '%q' "$f")"; done; echo "$out"; }

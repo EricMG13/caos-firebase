@@ -12,11 +12,7 @@ IMAGE="postgres@sha256:18cfe3ef5e6815560c98237d6216d1e5119702fb0f3894c8785dd58b8
 PASSWORD="local-test-admin-only"
 
 ROOT=$(cd "$(dirname "$0")/.." && pwd -P) || exit 2
-if command -v shasum >/dev/null 2>&1; then
-  HASH=$(printf '%s' "$ROOT" | shasum -a 256 | cut -c1-8)
-else
-  HASH=$(printf '%s' "$ROOT" | sha256sum | cut -c1-8)
-fi
+HASH=$(printf '%s' "$ROOT" | cksum | cut -d' ' -f1)
 NAME="caos-pg-$HASH"
 
 if ! docker info >/dev/null 2>&1; then

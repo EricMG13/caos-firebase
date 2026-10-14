@@ -102,10 +102,9 @@ jobs:
             exit 0
           fi
           git push origin "$branch"
-          if [ "$HAS_SYNC_TOKEN" = "true" ]; then
-            ci_note="Opened with SYNC_TOKEN, so CI runs on this PR."
-          else
-            ci_note="Opened with the built-in GITHUB_TOKEN: GitHub does not start workflow runs for events it causes, so CI will not run on this PR by itself. Re-run CI (close and reopen the PR, or push an empty commit as the owner) or set the SYNC_TOKEN secret (fine-grained PAT: contents, pull requests and issues write on this repo; not Workflows)."
+          ci_note=""
+          if [ "$HAS_SYNC_TOKEN" != "true" ]; then
+            ci_note="CI does not run on this PR unless SYNC_TOKEN is set; re-run it as the owner."
           fi
           {
             echo "Merges upstream/$UPSTREAM_BRANCH at \`$short\` into main."
