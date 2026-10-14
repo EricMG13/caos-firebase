@@ -147,9 +147,48 @@ const DeliverableFiled = object({
   filed_by: uuid,
 });
 
+// Plan 2 Task 1: a global ADMIN saves a rate deck; the saver is the actor,
+// never a field. The server refuses an empty deck, a repeated rate and year
+// and a rate outside (-1, 1).
+const SaveRateDeck = object({
+  as_of: string({ max: 10, pattern: "^\\d{4}-\\d{2}-\\d{2}$" }),
+  rates: array(V1_SHAPES.RateDeckRateView, 20),
+});
+const RateDeckSaved = object({ deck_id: uuid });
+// Plan 3 Task 2: add a COMPLETE run to the Book, bound to the snapshot digest
+// the Model showed, with the analyst-stated classification (the server judges
+// it against its own vocabularies); withdraw an entry with a reason, and a
+// note `OTHER` requires.
+const classification = string({ max: 64 });
+const rating = string({ max: 8 });
+// The longest agency outlook, DEVELOPING; the server judges its word.
+const outlook = string({ max: 10 });
+const AddToBook = object({
+  snapshot_sha256: hash,
+  sector: classification,
+  industry_group: nullable(classification),
+  domicile: string({ max: 2 }),
+  moodys: nullable(rating),
+  moodys_outlook: nullable(outlook),
+  sp: nullable(rating),
+  sp_outlook: nullable(outlook),
+  fitch: nullable(rating),
+  fitch_outlook: nullable(outlook),
+});
+const BookEntryAdded = object({ entry_id: uuid });
+const WithdrawBookEntry = object({
+  snapshot_sha256: hash,
+  reason: enumOf(["ADDED_IN_ERROR", "DATA_ERROR", "SUPERSEDED_SOURCES", "OTHER"] as const),
+  note: nullable(string({ max: 1000 })),
+});
+const BookEntryWithdrawn = object({ entry_id: uuid });
+
 /** Every command model `schema.json` declares, under its backend name. */
 export const V1_COMMAND_SHAPES = {
+  AddToBook,
   ApproveGate,
+  BookEntryAdded,
+  BookEntryWithdrawn,
   CancelRun,
   DeliverableFiled,
   DeliverableFrozen,
@@ -174,14 +213,17 @@ export const V1_COMMAND_SHAPES = {
   GateApproved,
   GatePreviewDocument,
   PinRunInput,
+  RateDeckSaved,
   RetryRun,
   RunCreated,
   RunInputPinned,
   RunWork,
+  SaveRateDeck,
   SignVerdict,
   SourcesAdmitted,
   StartRun,
   VerdictRecorded,
+  WithdrawBookEntry,
 };
 
 export type CreateCase = Infer<typeof CreateCase>;
@@ -217,6 +259,12 @@ export type FreezeDeliverable = Infer<typeof FreezeDeliverable>;
 export type DeliverableFrozen = Infer<typeof DeliverableFrozen>;
 export type FileDeliverable = Infer<typeof FileDeliverable>;
 export type DeliverableFiled = Infer<typeof DeliverableFiled>;
+export type AddToBook = Infer<typeof AddToBook>;
+export type BookEntryAdded = Infer<typeof BookEntryAdded>;
+export type WithdrawBookEntry = Infer<typeof WithdrawBookEntry>;
+export type BookEntryWithdrawn = Infer<typeof BookEntryWithdrawn>;
+export type SaveRateDeck = Infer<typeof SaveRateDeck>;
+export type RateDeckSaved = Infer<typeof RateDeckSaved>;
 
 export const parseCaseCreated = (value: unknown): CaseCreated => parse(CaseCreated, value);
 export const parseSourcesAdmitted = (value: unknown): SourcesAdmitted =>
@@ -242,6 +290,11 @@ export const parseStandingGranted = (value: unknown): StandingGranted =>
   parse(StandingGranted, value);
 export const parseStandingRevoked = (value: unknown): StandingRevoked =>
   parse(StandingRevoked, value);
+// The Model's Add to Book dialog and the Book's Withdraw control read these back.
+export const parseBookEntryAdded = (value: unknown): BookEntryAdded => parse(BookEntryAdded, value);
+export const parseBookEntryWithdrawn = (value: unknown): BookEntryWithdrawn =>
+  parse(BookEntryWithdrawn, value);
+export const parseRateDeckSaved = (value: unknown): RateDeckSaved => parse(RateDeckSaved, value);
 // No `parseVerdictRecorded`: the workspace has no control for it, and a
 // validator nothing calls is coverage without a caller. Its shape is pinned
 // above so the day one arrives it is validated, not cast.

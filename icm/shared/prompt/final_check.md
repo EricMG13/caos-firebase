@@ -6,9 +6,20 @@ exactly these {heading_count} H2 headings once, in this order: {headings}.
 Add only these model-authored front-matter fields: {authored_fields}. Do not add
 any other front-matter fields; `owned_object`, `schema_family`, `runtime_output`
 and `canonical_filename` belong outside canonical front matter.
+`confidence_score` must be an integer from 0 to 100 inclusive.
+`confidence_band` must match `confidence_score` exactly, with inclusive ranges:
+0-39: `Insufficient Information`; 40-59: `Low`; 60-79: `Medium`; 80-100: `High`.
 Include every register required by the authority. `committee_status` must be
 one of {committee_statuses}: what this pathway's decision scope
 ({decision_scope}) permits.
+No cell of a register's critical column, except those the authority lists
+for that register as `disqualifier_exempt_columns`, may be, in any letter
+case, exactly one of its `critical_cell_values_casefold` values. In a
+non-exempt free-text critical cell that would otherwise contain a blocked
+bare limitation, write the authority's reason form,
+`[Insufficient Information] — ` followed by the reason. Preserve the authority's
+permitted numeric `null` / `—` representations and labels from its closed value
+lists; put their gap explanations where that authority requires.
 An evidence line is all the text between two blank lines in the EVIDENCE
 section, other than an evidence header (its `source_id:` and `page:` lines);
 it may be a whole paragraph or a whole table row. The section's last line,

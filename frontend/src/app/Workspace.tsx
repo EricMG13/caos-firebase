@@ -44,7 +44,7 @@ import { QualificationStrip } from "@/chrome/QualificationStrip";
 import { SectionPanel, SectionTabs } from "@/chrome/SectionTabs";
 import { SectionSummary } from "@/chrome/SectionSummary";
 import { SiteHeader } from "@/chrome/SiteHeader";
-import { composeChrome, markDisabled } from "@/chrome/compose";
+import { CASE_SECTIONS, composeChrome, markDisabled } from "@/chrome/compose";
 import { fallbackChrome } from "@/chrome/fallback";
 import { EvidenceProvider } from "@/evidence/EvidenceContext";
 import { ReportDraftProvider } from "@/sections/report/draft";
@@ -127,6 +127,7 @@ export function Workspace({ section }: { section: Section }) {
   const runId = params.get("run");
   const revisionId = params.get("revision");
   const qualificationEvidence = params.get("qualification");
+  const excludeUnrealised = section === "model" ? params.get("exclude_unrealised") : null;
   const carried = new URLSearchParams();
   if (caseId) carried.set("case", caseId);
   if (runId) carried.set("run", runId);
@@ -137,7 +138,13 @@ export function Workspace({ section }: { section: Section }) {
   // A disabled section, or a case section with no case, sends no request and
   // opens no tail: it is `unavailable` in every mode (brief 4.1, decision 9).
   const requested =
-    sectionUrl(section, { case: caseId, run: runId, revision: revisionId, fixture }) !== null;
+    sectionUrl(section, {
+      case: caseId,
+      run: runId,
+      revision: revisionId,
+      fixture,
+      excludeUnrealised,
+    }) !== null;
   // Report and Committee without the run or revision they read are waiting on
   // the reader, not refused: they say what to pick and where (plan step 1).
   const need = selectionNeeded(section, { case: caseId, run: runId, revision: revisionId });
@@ -146,7 +153,7 @@ export function Workspace({ section }: { section: Section }) {
   // qualification hash is not part of it: it binds global evidence the strip
   // reads for itself and names no section request, so keying on it would tear
   // the section down — and its open tail with it — for a label change.
-  const key = `${section}|${caseId ?? ""}|${runId ?? ""}|${revisionId ?? ""}|${fixture ?? ""}`;
+  const key = `${section}|${caseId ?? ""}|${runId ?? ""}|${revisionId ?? ""}|${fixture ?? ""}|${excludeUnrealised ?? ""}`;
   const [held, setHeld] = useState<(Keyed<Held> & { version: number }) | null>(null);
   const readSequence = useRef(0);
   const reads = useMemo(
@@ -212,11 +219,21 @@ export function Workspace({ section }: { section: Section }) {
   // Reload moves the tail with it (decision 6). A view the server says is
   // gone has nothing to follow.
   const tailRun = runId ?? displayedRunId;
+  // A read under the desk-wide Book grant (spec B9) serves no standing: the
+  // reader holds no membership, so the member-only event stream is never
+  // opened for it. Analysis and Model are where that read lands, and they wait
+  // for the first document to say which reader this is.
+  const grantable = section === "analysis" || section === "model";
+  const readOnly = document !== null && document.chrome.served_role.standing === null;
+  // Only a document can say "granted"; a first answer that is a refusal or
+  // offline is no such answer, and the tail's reconnect is what re-reads it.
+  const failedFirst = status.kind === "error" || status.kind === "offline";
   const tailWanted =
     requested &&
     caseId !== null &&
     tailed(section) &&
     (runId !== null || current !== null) &&
+    (!grantable || (document !== null && !readOnly) || failedFirst) &&
     status.kind !== "unavailable";
 
   // A section no event refetches opens no stream -- Directory, and Book,
@@ -288,7 +305,7 @@ export function Workspace({ section }: { section: Section }) {
       const version = reads.begin();
       return fetchSection(
         section,
-        { case: caseId, run: runId, revision: revisionId, fixture },
+        { case: caseId, run: runId, revision: revisionId, fixture, excludeUnrealised },
         mine.controller.signal,
       ).then((next) => {
         // A late response, for a case or run the user has left, is discarded.
@@ -314,7 +331,7 @@ export function Workspace({ section }: { section: Section }) {
       flight = null;
       authority.current = issue(authority.current);
     };
-  }, [requested, section, caseId, runId, revisionId, fixture, key, reads]);
+  }, [requested, section, caseId, runId, revisionId, fixture, excludeUnrealised, key, reads]);
 
   // The view is mounted under what it is about, never under `observed_at`, so
   // an ordinary refresh keeps its local selection (R5).
@@ -327,6 +344,8 @@ export function Workspace({ section }: { section: Section }) {
   const listed = document && "revisions" in document.body ? document.body.revisions : null;
   const committeeRevision = listed ? committeeRevisionOf(listed, displayedRevisionId) : revisionId;
   const railSearch = (id: Section): string => {
+    // A closed entry (a granted reader's member-only sections) carries no case.
+    if (readOnly && id !== section && CASE_SECTIONS.includes(id)) return "";
     const query = new URLSearchParams(carried);
     if ((id === "report" || id === "committee") && !runId && displayedRunId) {
       query.set("run", displayedRunId);
@@ -407,6 +426,7 @@ export function Workspace({ section }: { section: Section }) {
   // typed views and no document satisfies them all; the registry has already
   // checked each view against its own document, and a disabled section never
   // reaches this render with a document to mount.
+  const AdminView = SECTION_VIEWS.admin;
   const View = SECTION_VIEWS[section] as ComponentType<{
     document: WorkspaceDocument;
     tab: string | null;
@@ -422,7 +442,7 @@ export function Workspace({ section }: { section: Section }) {
       sidebar={
         <AppSidebar
           section={section}
-          entries={markDisabled(chrome?.rail ?? null)}
+          entries={markDisabled(chrome?.rail ?? null, readOnly ? section : null)}
           local={chrome?.rail_local ?? null}
           servedRole={chrome?.served_role ?? null}
           searchFor={railSearch}
@@ -491,26 +511,33 @@ export function Workspace({ section }: { section: Section }) {
               {/* The snapshot ledger outlives the documents a section renders,
                 so it sits above the boundary and the mount key. */}
               <LedgerProvider>
-                <RegionState status={status} onReload={reload} onRetry={retry} section={section}>
-                  {(doc) => (
-                    // A render failure is about the document that caused it:
-                    // the next one served clears it, without waiting for a
-                    // navigation to unmount the boundary.
-                    <SectionBoundary key={mountKey} resetOn={doc.observed_at}>
-                      {/* A view whose chunk is still in flight reads as the
+                {section === "admin" ? (
+                  // No document to read: the card fetches the rate deck itself.
+                  <Suspense fallback={<SurfaceState kind="loading" />}>
+                    <AdminView document={undefined} tab={null} />
+                  </Suspense>
+                ) : (
+                  <RegionState status={status} onReload={reload} onRetry={retry} section={section}>
+                    {(doc) => (
+                      // A render failure is about the document that caused it:
+                      // the next one served clears it, without waiting for a
+                      // navigation to unmount the boundary.
+                      <SectionBoundary key={mountKey} resetOn={doc.observed_at}>
+                        {/* A view whose chunk is still in flight reads as the
                         region loading, and a failed one meets the boundary.
                         Inside the panel, so the tabs never name a panel that
                         is not on the page while it loads. */}
-                      <SectionPanel tab={activeTab}>
-                        <Suspense fallback={<SurfaceState kind="loading" />}>
-                          <DocumentReadContext.Provider value={readOrder}>
-                            <View key={mountKey} document={doc} tab={activeTab} />
-                          </DocumentReadContext.Provider>
-                        </Suspense>
-                      </SectionPanel>
-                    </SectionBoundary>
-                  )}
-                </RegionState>
+                        <SectionPanel tab={activeTab}>
+                          <Suspense fallback={<SurfaceState kind="loading" />}>
+                            <DocumentReadContext.Provider value={readOrder}>
+                              <View key={mountKey} document={doc} tab={activeTab} />
+                            </DocumentReadContext.Provider>
+                          </Suspense>
+                        </SectionPanel>
+                      </SectionBoundary>
+                    )}
+                  </RegionState>
+                )}
               </LedgerProvider>
             </ReportDraftProvider>
           </EvidenceProvider>

@@ -10,11 +10,14 @@ coverage.xml
 bandit.json
 .env
 frontend/node_modules/
+/node_modules/
 frontend/dist/
 frontend/dist-demo/
 frontend/test-results/
 .complexipy_cache/
 .coverage
+.coverage.shard-*
+coverage-shards/
 
 # Another session's workflow worktrees, never part of the tree.
 .claude/worktrees/
@@ -40,3 +43,5 @@ firebase-debug.log*
 firestore-debug.log*
 node_modules/
 ui-debug.log*
+# mutmut's working copy of the mutated package (pyproject [tool.mutmut]).
+mutants/

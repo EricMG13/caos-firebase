@@ -14,6 +14,7 @@ import {
   number,
   object,
   parse,
+  record,
   string,
   uuid,
   type Shape,
@@ -59,6 +60,8 @@ const ActionName = enumOf([
   "SIGN_OPINION",
   "FREEZE_DELIVERABLE",
   "FILE_DELIVERABLE",
+  "ADD_TO_BOOK",
+  "WITHDRAW_BOOK_ENTRY",
 ]);
 
 const Subject = object({ case_id: uuid, title: text });
@@ -72,7 +75,7 @@ const ActionView = object({
 const Chrome = object({
   subject: nullable(Subject),
   served_role: ServedRole,
-  actions: array(ActionView, 16),
+  actions: array(ActionView, 18),
 });
 
 function sectionDocument<B extends ReturnType<typeof object>>(body: B) {
@@ -223,6 +226,9 @@ const RefusalCode = enumOf([
   "STORE_UNAVAILABLE",
   "IDENTITY_UNAVAILABLE",
   "STREAM_LIMIT_REACHED",
+  "RUN_NOT_COMPLETE_FOR_BOOK",
+  "BOOK_ENTRY_NOT_FOUND",
+  "BOOK_ENTRY_ALREADY_WITHDRAWN",
 ]);
 const RunSummary = object({
   run_id: uuid,
@@ -556,79 +562,151 @@ const ModelForecast = object({
   perimeter: text,
   periods: array(ModelPeriod, 240),
 });
+// Plan 2: the credit model of the run's accepted CP-1, laid out by the host
+// calculator. Every figure is the server's exact decimal string, null with a
+// reason where there is none; the browser performs no arithmetic. Text is
+// CP-1's cell text or a host label on it (two cells' worth); a limitation
+// lists the columns its note is on.
+const MODEL_TEXT = 8192;
+const modelText = string({ max: MODEL_TEXT });
+const modelDecimal = string({ max: 64, pattern: "^-?[0-9]+(\\.[0-9]+)?$" });
+const ModelSourceView = object({
+  source_id: modelText,
+  source_locator: modelText,
+  // The CP-1 citation the cell's `[C<n>]` marker names (D107), else null.
+  citation: nullable(CitationView),
+});
+const ModelCellView = object({
+  value: nullable(modelDecimal),
+  reason: nullable(
+    enumOf([
+      "NOT_PROJECTED",
+      "NOT_APPLICABLE",
+      "NOT_SOURCED",
+      "COMPONENT_MISSING",
+      "ZERO_OR_NEGATIVE_DENOMINATOR",
+      "NOT_STATED",
+    ]),
+  ),
+  basis: nullable(enumOf(["REPORTED", "CALCULATED", "PRO_FORMA", "PROJECTED", "DRIVER"])),
+  stated: nullable(modelDecimal),
+  note: nullable(modelText),
+  sources: array(ModelSourceView, 8),
+});
+const ModelColumnView = object({
+  column_id: modelText,
+  kind: enumOf(["QUARTER", "PYTD", "YTD", "FY", "LTM", "PF_LTM", "PROJECTED"]),
+  label: modelText,
+  period_id: nullable(modelText),
+  fiscal_year: modelText,
+  end_date: nullable(modelText),
+  days: nullable(int()),
+  case: nullable(enumOf(["BASE", "DOWNSIDE"])),
+});
+const ModelTermsView = object({
+  reference_rate: modelText,
+  spread_or_coupon: modelText,
+  floor: modelText,
+  maturity: modelText,
+  amortisation: modelText,
+});
+const ModelLineView = object({
+  line_id: modelText,
+  band: modelText,
+  label: modelText,
+  kind: enumOf(["ACCOUNT", "SUBTOTAL", "RATIO", "MEMO", "PF", "GROWTH"]),
+  unit: enumOf(["MONEY", "PERCENT", "MULTIPLE", "DAYS", "COUNT", "RATE", "KPI"]),
+  unit_label: nullable(modelText),
+  rank: nullable(modelText),
+  terms: nullable(ModelTermsView),
+  cells: array(ModelCellView, 64),
+});
+const RateDeckRefView = object({
+  deck_id: uuid,
+  as_of: string({ max: 10, pattern: "^\\d{4}-\\d{2}-\\d{2}$" }),
+});
 const ModelBody = object({
+  // The digest of the accepted artifacts shown: what Add to Book binds.
+  snapshot_sha256: nullable(hash),
   case_id: uuid,
   latest_run_id: nullable(uuid),
   displayed_run_id: nullable(uuid),
-  subject: nullable(RunSubjectView),
   displayed_run_status: nullable(enumOf(RUN_STATUSES)),
-  blocked_by: nullable(BlockedByView),
+  subject: nullable(RunSubjectView),
+  currency: nullable(modelText),
+  unit: nullable(modelText),
+  exclude_unrealised: bool,
+  rate_deck: nullable(RateDeckRefView),
+  columns: array(ModelColumnView, 64),
+  lines: array(ModelLineView, 400),
+  limitations: array(string({ max: MODEL_TEXT + 64 * (MODEL_TEXT + 2) }), 2048),
+  // The accepted CP-CF record, kept for comparison.
   forecast: nullable(ModelForecast),
-  unavailable_reason: nullable(literal("NO_ACCEPTED_FORECAST")),
 });
 const ModelDocument = sectionDocument(ModelBody);
 
-// Book, `/api/v1/book`: the credit across the portfolio. No
-// case in its body, so it is the one section document beside Directory's that
-// answers for no single case.
-// What the column's own figure is (N60): a plain fraction and a currency
-// amount are the same shape of decimal string, so the cell is told which.
-const BookColumn = object({
-  key: short,
-  label: text,
-  unit: enumOf(["percent", "currency", "multiple", "count", "none"]),
-});
-const BookResearch = object({ route_node_id: short, module_id: short, qa_status: short });
-/** The ten passport fields, in their order and closed to them. */
-const BookPassport = object({
-  definition: text,
-  period: text,
-  scenario: text,
-  reporting_period: text,
-  computed_at: datetime,
-  snapshot: hash,
-  method: text,
-  derivation: text,
-  citations: array(CitationView, 1024),
-  supporting_research: array(BookResearch, 256),
-});
-const BookCell = object({
-  column: short,
-  value: nullable(string({ max: 64, pattern: "^-?[0-9]+(\\.[0-9]+)?$" })),
-  unavailable_reason: nullable(literal("ZERO_OR_NEGATIVE_DENOMINATOR")),
-  passport: BookPassport,
-});
-const BookPeriod = object({
-  case: text,
-  period_id: text,
-  fiscal_year: text,
-  days: string({ max: 3, pattern: "^[0-9]+$" }),
-  unavailable_reason: nullable(text),
-  cells: array(BookCell, 16),
-});
-const BookRow = object({
+// Book, `/api/v1/book`: the desk-wide Book, one row per issuer from the
+// stored book entries. No case in its body, so it is the one section document
+// beside Directory's that answers for no single case.
+const LINE_UNITS = ["MONEY", "PERCENT", "MULTIPLE", "DAYS", "COUNT", "RATE", "KPI"] as const;
+const BookMetricView = object({ line_id: modelText, label: modelText, unit: enumOf(LINE_UNITS) });
+const issuerKey = string({ max: 128 });
+const classification = string({ max: 64 });
+const rating = string({ max: 8 });
+const outlook = string({ max: 10 });
+// Every metrics leaf is a decimal string or null; a projected basis' fiscal
+// year is served apart, in `fiscal_years`.
+const decimalText = string({ max: 64, pattern: "^-?[0-9]+(\\.[0-9]+)?$" });
+const BookEntryView = object({
+  entry_id: uuid,
   case_id: uuid,
-  title: text,
-  standing: Standing,
-  subject: nullable(RunSubjectView),
-  displayed_run_id: nullable(uuid),
-  displayed_run_status: nullable(enumOf(RUN_STATUSES)),
-  snapshot: nullable(hash),
-  currency: nullable(string({ max: 3, pattern: "^[A-Z]{3}$" })),
-  scale: nullable(enumOf(["units", "thousands", "millions", "billions"])),
-  periods: array(BookPeriod, 8),
-  unavailable_reason: nullable(literal("NO_ACCEPTED_FORECAST")),
-  refusal: nullable(later(() => RefusalBody)),
+  run_id: uuid,
+  issuer_key: issuerKey,
+  issuer_id: issuerKey,
+  issuer_name: text,
+  reporting_period: text,
+  analysis_date: string({ max: 10, pattern: "^\\d{4}-\\d{2}-\\d{2}$" }),
+  route: text,
+  filed: bool,
+  sources_withdrawn: bool,
+  sector: classification,
+  industry_group: nullable(classification),
+  domicile: string({ max: 2 }),
+  moodys: nullable(rating),
+  moodys_outlook: nullable(outlook),
+  sp: nullable(rating),
+  sp_outlook: nullable(outlook),
+  fitch: nullable(rating),
+  fitch_outlook: nullable(outlook),
+  composite: rating,
+  composite_bucket: enumOf(["IG", "BB", "B", "CCC_AND_BELOW", "NR"]),
+  composite_notch: nullable(int({ min: 1, max: 22 })),
+  currency: nullable(modelText),
+  unit: nullable(modelText),
+  metrics: record(record(nullable(decimalText), 400, SHORT), 8, SHORT),
+  fiscal_years: record(string({ max: 4, pattern: "^[0-9]{4}$" }), 8, SHORT),
+  limitations: array(string({ max: MODEL_TEXT + 64 * (MODEL_TEXT + 2) }), 2048),
+  // The entry's own stored digest: what Withdraw is bound to.
+  snapshot_sha256: hash,
+  added_at: datetime,
+  withdrawn_at: nullable(datetime),
+  withdrawal_reason: nullable(
+    enumOf(["ADDED_IN_ERROR", "DATA_ERROR", "SUPERSEDED_SOURCES", "OTHER"]),
+  ),
+  withdrawal_note: nullable(string({ max: 1000 })),
+  // What this viewer may do to the entry; advisory, the command rechecks.
+  actions: array(ActionName, 1),
 });
-const BookBasis = object({
-  period: literal("EVERY_ACCEPTED_PERIOD"),
-  scenario: literal("EVERY_ACCEPTED_CASE"),
-  accepted_only: literal(true),
+const BookIssuerView = object({
+  issuer_key: issuerKey,
+  displayed: BookEntryView,
+  // Newest first, withdrawn entries included, the displayed one excluded.
+  history: array(BookEntryView, 100),
 });
+
 const BookBody = object({
-  basis: BookBasis,
-  columns: array(BookColumn, 16),
-  rows: array(BookRow, 4),
+  issuers: array(BookIssuerView, 1000),
+  metric_catalogue: array(BookMetricView, 400),
 });
 const BookDocument = sectionDocument(BookBody);
 
@@ -804,6 +882,23 @@ const QualificationRead = object({
   expires_at: nullable(datetime),
 });
 
+// Plan 2 Task 1: one row of a rate deck, and the latest deck any signed-in
+// user reads (the route answers null when none was ever saved). Rates are
+// plain decimal text, never a number.
+const rate = string({ max: 64, pattern: "^-?[0-9]+(\\.[0-9]+)?$" });
+const RateDeckRateView = object({
+  reference_rate: enumOf(["SOFR", "TERM_SOFR", "EURIBOR", "SONIA"]),
+  year_offset: int({ min: 1, max: 5 }),
+  base_rate: rate,
+  downside_rate: rate,
+});
+const RateDeckView = object({
+  deck_id: uuid,
+  as_of: string({ max: 10, pattern: "^\\d{4}-\\d{2}-\\d{2}$" }),
+  saved_at: datetime,
+  rates: array(RateDeckRateView, 20),
+});
+
 /** Every model `schema.json` declares, under its backend name. */
 export const V1_SHAPES = {
   NarrativeFigure,
@@ -820,15 +915,17 @@ export const V1_SHAPES = {
   ModelValue,
   ModelPeriod,
   ModelForecast,
+  ModelSourceView,
+  ModelCellView,
+  ModelColumnView,
+  ModelTermsView,
+  ModelLineView,
+  RateDeckRefView,
   ModelBody,
   ModelDocument,
-  BookColumn,
-  BookResearch,
-  BookPassport,
-  BookCell,
-  BookPeriod,
-  BookRow,
-  BookBasis,
+  BookMetricView,
+  BookEntryView,
+  BookIssuerView,
   BookBody,
   BookDocument,
   ActionName,
@@ -867,6 +964,8 @@ export const V1_SHAPES = {
   RefusalCode,
   QualificationRead,
   QualificationState,
+  RateDeckRateView,
+  RateDeckView,
   ResearchBrief,
   ResearchBriefQuestion,
   RunQualifier,
@@ -896,12 +995,13 @@ export type UploadDocument = Infer<typeof UploadDocument>;
 export type RunSectionDocument = Infer<typeof RunSectionDocument>;
 export type AnalysisDocument = Infer<typeof AnalysisDocument>;
 export type ModelDocument = Infer<typeof ModelDocument>;
+export type ModelLineView = Infer<typeof ModelLineView>;
+export type ModelColumnView = Infer<typeof ModelColumnView>;
+export type ModelCellView = Infer<typeof ModelCellView>;
 export type BookDocument = Infer<typeof BookDocument>;
-export type BookRow = Infer<typeof BookRow>;
-export type BookCell = Infer<typeof BookCell>;
-export type BookPassport = Infer<typeof BookPassport>;
-export type BookColumn = Infer<typeof BookColumn>;
-export type BookPeriod = Infer<typeof BookPeriod>;
+export type BookEntryView = Infer<typeof BookEntryView>;
+export type BookIssuerView = Infer<typeof BookIssuerView>;
+export type BookMetricView = Infer<typeof BookMetricView>;
 export type ReportDocument = Infer<typeof ReportDocument>;
 export type CommitteeDocument = Infer<typeof CommitteeDocument>;
 export type RevisionSummary = Infer<typeof RevisionSummary>;
@@ -910,6 +1010,8 @@ export type RefusalBody = Infer<typeof RefusalBody>;
 export type RefusalCode = Infer<typeof RefusalCode>;
 export type QualificationRead = Infer<typeof QualificationRead>;
 export type QualificationState = Infer<typeof QualificationState>;
+export type RateDeckRateView = Infer<typeof RateDeckRateView>;
+export type RateDeckView = Infer<typeof RateDeckView>;
 export type Chrome = Infer<typeof Chrome>;
 export type CaseRow = Infer<typeof CaseRow>;
 export type MemberRow = Infer<typeof MemberRow>;
@@ -956,6 +1058,9 @@ export const parseBookDocument = (value: unknown): BookDocument => parse(BookDoc
 export const parseReportDocument = (value: unknown): ReportDocument => parse(ReportDocument, value);
 export const parseCommitteeDocument = (value: unknown): CommitteeDocument =>
   parse(CommitteeDocument, value);
+/** The latest rate deck, or null when none was ever saved. */
+export const parseLatestRateDeck = (value: unknown): RateDeckView | null =>
+  parse(nullable(RateDeckView), value);
 export const parseRefusalBody = (value: unknown): RefusalBody => parse(RefusalBody, value);
 export const parseQualificationRead = (value: unknown): QualificationRead =>
   parse(QualificationRead, value);

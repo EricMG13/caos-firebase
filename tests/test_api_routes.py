@@ -89,7 +89,7 @@ from caos.methodology.handoff import _decoded_record, record_bytes
 from caos.refusals import Refusal, RefusalCode
 from caos.store import StoreConnection
 from caos.store.budget import CEILING_ENV
-from caos.store.commands import request_digest
+from caos.store.commands import find_receipt, record_receipt, request_digest
 from caos.store.members import Standing, grant, revoke
 from caos.store.routes import pin_route, pinned_route
 from caos.store.runs import block_run, start_run
@@ -1107,6 +1107,9 @@ def test_the_surface_is_exactly_the_routes_it_declares(
         ),
         "/api/v1/cases/{case_id}/runs/{run_id}/gates/{gate}/approval": "approve",
         "/api/v1/qualification/{evidence_sha256}/verdict": "sign_verdict",
+        # Plan 2 Task 1: the global rate deck, saved by an ADMIN, read by anyone.
+        "/api/v1/rate-decks": "save_rate_deck",
+        "/api/v1/rate-decks/latest": "read_latest_rate_deck",
         # Task 12.1: the seven governed writes that had no request path.
         "/api/v1/cases/{case_id}/members": "grant_standing",
         "/api/v1/cases/{case_id}/members/{user_id}/revocation": "revoke_standing",
@@ -1122,6 +1125,11 @@ def test_the_surface_is_exactly_the_routes_it_declares(
         "/api/v1/cases/{case_id}/revisions/{revision_id}/package": (
             "read_deliverable_package"
         ),
+        # Plan 3 Task 2: Add to Book and Withdraw, WRITER+ on the case.
+        "/api/v1/cases/{case_id}/runs/{run_id}/book-entry": "add_to_book",
+        "/api/v1/cases/{case_id}/book-entries/{entry_id}/withdrawal": (
+            "withdraw_book_entry"
+        ),
     }
 
 
@@ -1134,7 +1142,9 @@ def test_every_section_read_depends_on_the_shared_dependencies() -> None:
     The parsers (`case_path`, `run_query`, `revision_query`) and `visible_case`
     are `caos.api.deps`'s too, so a route that took a copy would show here.
     `visible_case` opens the store, and stays behind identity by its own
-    sub-dependencies whatever position a route gives it.
+    sub-dependencies whatever position a route gives it. Analysis and Model
+    declare `visible_run` in its place, the one dependency that may answer
+    the desk-wide grant (spec B9); every other route stays member-only.
     """
     routes = {
         route.path: route
@@ -1162,14 +1172,9 @@ def test_every_section_read_depends_on_the_shared_dependencies() -> None:
         for path, route in routes.items()
     }
     assert calls["/api/v1/directory"] == [actor_from_request, store_connection]
-    # The Book is portfolio-scoped: no case in its path, so no `case_path` and
-    # no `visible_case`. Standing is read per credit from the listing instead.
-    assert calls["/api/v1/book"] == [
-        actor_from_request,
-        store_connection,
-        deps.request_blobs,
-        deps.methodology_bundle,
-    ]
+    # The Book is desk-wide (spec B2): no case in its path, so no `case_path`
+    # and no `visible_case`, and it reads stored entries, never a blob.
+    assert calls["/api/v1/book"] == [actor_from_request, store_connection]
     # The request's blobs are the process's store remembering what it
     # verified (ED-7): a layer over `blob_store`, so overriding that reaches
     # every route, and each request gets a memo of its own.
@@ -1208,15 +1213,23 @@ def test_every_section_read_depends_on_the_shared_dependencies() -> None:
         actor_from_request,
         deps.case_path,
         deps.run_query,
-        deps.visible_case,
+        deps.visible_run,
         store_connection,
         deps.request_blobs,
         methodology_bundle,
     ]
-    assert (
-        calls["/api/v1/cases/{case_id}/model"]
-        == calls["/api/v1/cases/{case_id}/analysis"]
-    )
+    # The Model's one query of its own, `exclude_unrealised`, is parsed with
+    # the run's, before the case's visibility opens the store.
+    assert calls["/api/v1/cases/{case_id}/model"] == [
+        actor_from_request,
+        deps.case_path,
+        deps.run_query,
+        model_read.exclude_unrealised_query,
+        deps.visible_run,
+        store_connection,
+        deps.request_blobs,
+        methodology_bundle,
+    ]
     committee_dependencies = [
         actor_from_request,
         deps.case_path,
@@ -1556,6 +1569,14 @@ def test_an_unknown_gate_slug_is_routings_own_404_before_any_connection() -> Non
     assert caught.value.status_code == 404
 
 
+# The command modules that write outside the governed envelope, and the
+# exact routes each may serve.
+GLOBAL_WRITES = {
+    "qualification.py": {("POST", "/api/v1/qualification/{evidence_sha256}/verdict")},
+    "rate_decks.py": {("POST", "/api/v1/rate-decks")},
+}
+
+
 def test_every_governed_write_goes_through_the_one_envelope() -> None:
     """`governed` is where the digest, the replay under the key, the case lock
     and the receipt's validation against its declared model are wired together.
@@ -1567,6 +1588,8 @@ def test_every_governed_write_goes_through_the_one_envelope() -> None:
     reason: what must not exist cannot be proved by testing what does.
     `qualification.py` is the stated exception and calls neither -- its write is
     `record_verdict` in its own transaction, which its docstring says out loud.
+    `rate_decks.py` is the second, the same way: `save_deck` and its receipt
+    in one transaction, a global write with no case (Plan 2 Task 1).
     """
     commands = Path(__file__).resolve().parents[1] / "caos" / "api" / "commands"
     callers = sorted(
@@ -1587,8 +1610,25 @@ def test_every_governed_write_goes_through_the_one_envelope() -> None:
     )
     assert declaring, "no module declares a write route; the reader read nothing"
     for name in declaring:
-        if name == "qualification.py":
-            continue  # the stated exception; its own docstring says why
+        if name in GLOBAL_WRITES:
+            # The two global writes, each with no case to lock or audit
+            # chain to extend; each module's docstring says why. Exempt from
+            # the envelope only for exactly the routes listed, and only while
+            # each still writes through a command receipt: a route added
+            # there later fails here rather than slipping past.
+            module = import_module(f"caos.api.commands.{name[:-3]}")
+            served = {
+                (method, route.path)
+                for route in module.router.routes
+                if isinstance(route, APIRoute)
+                for method in route.methods or ()
+            }
+            assert served == GLOBAL_WRITES[name], name
+            assert getattr(module, "find_receipt", None) is find_receipt, name
+            assert getattr(module, "record_receipt", None) is record_receipt, name
+            source = (commands / name).read_text("utf-8")
+            assert "record_receipt(" in source and "find_receipt(" in source, name
+            continue
         module = import_module(f"caos.api.commands.{name[:-3]}")
         # The object, not the spelling: a module that defined its own helper
         # called `governed` would satisfy a text search and bypass the envelope.
