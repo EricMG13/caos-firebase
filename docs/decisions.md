@@ -91,3 +91,13 @@ Later entries override earlier ones. Details live in the design spec named in ea
   `caos-role-map`, pinned by version, because the repository and the exported
   `service.yaml` are public and the map lists real emails; app code unchanged (it
   arrives as the same environment variable). `docs/DEPLOY.md` §3, §6.
+- FD26 (2026-10-11) — Fork-owned development-speed tooling: `scripts/fork_gates.sh`
+  (parallel gate runner with per-gate logs; `quick` runs only what a change touches),
+  `scripts/worktree_postgres.sh` (a throwaway Postgres per checkout for pytest and
+  postgres-races, because suites sharing the one compose database raced on
+  `tests/test_pg_reaper.py`; the container smoke and the vite-preview gates still use
+  shared resources and are serialized across checkouts by a lock) and the weekly
+  `upstream-sync` workflow (opens the FD22 merge-commit sync PR, or an issue on a conflict or when upstream
+  changed workflow files; `SYNC_TOKEN` has no Workflows permission).
+  All are new files, so upstream merges never conflict; no new dependency (Bash,
+  Docker, the `gh` CLI already on the runner, actions already pinned in `ci.yml`).
