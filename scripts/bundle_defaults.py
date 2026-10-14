@@ -1,0 +1,108 @@
+#!/usr/bin/env python3
+"""The one source for the bundle's own variable defaults (N23).
+
+`databricks.yml` states the endpoint, price, run ceiling, both group names
+and the Lakebase names that have a default (the Autoscaling branch, endpoint
+and database id, the Provisioned database) once, as
+`variables.<name>.default`; the deploy scripts and the loopback stub read
+them back from here rather than repeating the values by hand. No YAML
+parser: the same small, line-oriented reading
+`scripts/check_gate_config.py` already uses on this file's other blocks,
+so nothing here can read a default a real YAML parser would not, and
+nothing new is added to the dependency closet for it.
+"""
+
+from __future__ import annotations
+
+import re
+import shlex
+import sys
+from pathlib import Path
+
+REPO = Path(__file__).resolve().parents[1]
+# The names every copy repeats, in the bundle's own spelling.
+NAMES = (
+    "model_endpoint",
+    "model_price",
+    "model_choices",
+    "run_ceiling",
+    "group_admin",
+    "group_analyst",
+    "lakebase_branch",
+    "lakebase_endpoint",
+    "lakebase_database_id",
+    "lakebase_database",
+)
+# What `scripts/enterprise_deploy.sh` lets the environment set, as its own
+# header lists them. The endpoint, price and run ceiling are its arguments 5
+# to 7 and never read from the environment (N5): an inherited MODEL_PRICE
+# once replaced the bundle's default price unannounced.
+FROM_ENVIRONMENT = frozenset(
+    {
+        "group_admin",
+        "group_analyst",
+        "lakebase_branch",
+        "lakebase_endpoint",
+        "lakebase_database_id",
+        "lakebase_database",
+    }
+)
+_ENTRY = re.compile(r"  (\w+):\s*")
+_DEFAULT = re.compile(r"\s+default:(.*)")
+# Where a plain scalar's inline comment starts: a `#` after whitespace.
+_COMMENT = re.compile(r"\s#")
+
+
+def _scalar(raw: str) -> str:
+    """One scalar as YAML reads it on its line (N5): a quoted value is what
+    its quotes hold, whatever follows; a plain one ends where an inline
+    comment starts, and a `#` inside a word is part of it."""
+    raw = raw.strip()
+    if raw[:1] in ("'", '"') and raw.find(raw[0], 1) > 0:
+        return raw[1 : raw.find(raw[0], 1)]
+    comment = _COMMENT.search(raw)
+    return (raw[: comment.start()] if comment else raw).strip()
+
+
+def _variables(text: str) -> dict[str, str]:
+    """Each `variables:` entry's own `default:`, read the way
+    `check_gate_config._sync_lists` reads the bundle's other blocks: no
+    nesting past one variable's scalar default, which is all any copy needs."""
+    block = text.partition("\nvariables:\n")[2].partition("\nresources:\n")[0]
+    found: dict[str, str] = {}
+    name = ""
+    for line in block.splitlines():
+        if (entry := _ENTRY.fullmatch(line)) is not None:
+            name = entry.group(1)
+        elif name and (value := _DEFAULT.fullmatch(line)) is not None:
+            found[name] = _scalar(value.group(1))
+            name = ""
+    return found
+
+
+def defaults(root: Path = REPO) -> dict[str, str]:
+    """`databricks.yml`'s own defaults for every name in `NAMES` it states."""
+    variables = _variables((root / "databricks.yml").read_text(encoding="utf-8"))
+    return {name: variables[name] for name in NAMES if name in variables}
+
+
+def main(argv: list[str] | None = None) -> int:
+    """`--shell` prints each default as a bash assignment to its upper-cased
+    name, for a wrapper to `eval`: one in `FROM_ENVIRONMENT` only when the
+    caller has not already set it, any other always (N5); anything else
+    prints `name=value`, one a line."""
+    args = sys.argv[1:] if argv is None else argv
+    shell = "--shell" in args
+    for name, value in defaults().items():
+        if not shell:
+            print(f"{name}={value}")
+        elif name in FROM_ENVIRONMENT:
+            upper = name.upper()
+            print(f'[ -n "${{{upper}:-}}" ] || {upper}={shlex.quote(value)}')
+        else:
+            print(f"{name.upper()}={shlex.quote(value)}")
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())

@@ -1,0 +1,937 @@
+"""The deliverable: one HTML file, and a render that originates nothing.
+
+The host renders from the frozen snapshot -- the accepted artifacts in route
+order, every figure carrying its citation, then the analyst's narrative and
+the module provenance index.
+
+The structural claim is the one worth protecting: *the render is a function of
+frozen bytes*. It takes a payload and returns a page. It has no store, no
+connection and no clock, so there is no editorial boundary to police -- nothing
+here can reach past the payload to fetch something newer, prettier or different.
+That is what `test_the_deliverable_renders_from_the_frozen_payload_alone`
+enforces by rendering with the store closed.
+
+The consequence is deliberate: both sides of an unresolved conflict, `Restricted`
+and `SCREENING_ONLY` qualifications reach the page exactly as the artifacts carry
+them. A render that tidied them would be originating an opinion.
+
+It prints to paper. No PDF, deck, dashboard or workbook, and no network: a page
+that fetched a stylesheet would render differently the day the stylesheet moved,
+and this file has to render the same in ten years.
+"""
+
+from __future__ import annotations
+
+import hashlib
+import json
+import re
+import unicodedata
+from collections.abc import Mapping, Sequence
+from html import escape
+from typing import Any
+
+# Every approved copy says so on its face. The bytes that carry an opinion are
+# not the bytes that carry a filing.
+PENDING = "PENDING APPROVAL"
+# A pathway scope that is a screen, never committee clearance (`handoff.py`).
+SCREENING_ONLY = "SCREENING_ONLY"
+# The rule every record written before one was recorded was accepted under,
+# and the two under which a quote is its own whole line (`citations.py`).
+ANY_RUN = "any-run"
+_WHOLE_LINE_RULES = frozenset({"whole-line", "whole-line-as-shown"})
+
+
+class RenderRefused(ValueError):
+    """A portable render refusal; the host maps its code at its boundary."""
+
+    def __init__(self, code: str) -> None:
+        self.code = code
+        super().__init__(code)
+
+
+def render(payload: Mapping[str, Any]) -> bytes:
+    """The frozen payload as one self-contained HTML file.
+
+    Pure: no I/O, no clock, no randomness. The same payload renders
+    byte-identically, which is what makes the audit package's re-render a check
+    rather than a second opinion.
+    """
+    case = _text(payload, "case_title")
+    revision = _text(payload, "revision_id")
+    artifacts = payload.get("artifacts")
+    if not isinstance(artifacts, list) or not artifacts:
+        raise RenderRefused("DELIVERABLE_PAYLOAD_INVALID")
+
+    # A canonical artifact's page facts come from its record (§41).
+    views = [_canonical(artifact) for artifact in artifacts]
+    body = "\n".join(_handoff(view) for view in views)
+    # A narrative figure is one of these citations (`verify_package` holds it
+    # to the record's copy), so the line it anchored in is read from there.
+    cited = {
+        str(artifact.get("route_node_id")): view
+        for artifact, view in zip(artifacts, views, strict=True)
+    }
+    narrative = _narrative(payload.get("narrative"), cited)
+    provenance = _provenance([view.provenance for view in views])
+
+    return (
+        "<!doctype html>\n"
+        '<html lang="en">\n<head>\n<meta charset="utf-8">\n'
+        f"<title>{escape(case)} — {escape(revision)}</title>\n"
+        # Inline, and print-first. A page that fetched a stylesheet would render
+        # differently the day that stylesheet moved.
+        "<style>\n"
+        "body{font:11pt/1.45 Georgia,serif;max-width:44em;margin:2em auto;color:#111}\n"
+        "h1,h2{font-weight:600;line-height:1.2}\n"
+        ".status{border:1px solid #111;padding:.4em .8em;display:inline-block}\n"
+        "blockquote{border-left:3px solid #999;margin:.6em 0;\n"
+        "padding:.2em 1em;color:#333}\n"
+        ".cite{font-size:9pt;color:#555}\n"
+        "pre{white-space:pre-wrap;font:9pt/1.35 Menlo,monospace}\n"
+        "table{border-collapse:collapse;width:100%;font-size:9.5pt}\n"
+        "th,td{border:1px solid #bbb;padding:.25em .5em;text-align:left;\n"
+        "vertical-align:top}\n"
+        "h4,h5,h6{font-weight:600;line-height:1.25;margin:1em 0 .3em}\n"
+        "@media print{body{margin:0;max-width:none}}\n"
+        "</style>\n</head>\n<body>\n"
+        f"<h1>{escape(case)}</h1>\n"
+        f'<p class="status">{escape(PENDING)}</p>\n'
+        f"<p>Revision {escape(revision)}</p>\n"
+        f"{body}\n"
+        f"{narrative}"
+        f"{provenance}"
+        "</body>\n</html>\n"
+    ).encode()
+
+
+class _Handoff:
+    """One canonical artifact as the page shows it, read from its record:
+    its anchored `citations`, its `unverified` ones (D106; absent is none)
+    and the rule its quotes were accepted under (absent is `ANY_RUN`, every
+    record written before the rule was recorded)."""
+
+    __slots__ = (
+        "citations",
+        "markdown",
+        "projections",
+        "provenance",
+        "rule",
+        "unverified",
+    )
+
+    def __init__(self, markdown: str, record: Mapping[str, Any]) -> None:
+        self.markdown = markdown
+        projections = record.get("projections")
+        citations = record.get("citations")
+        unverified = record.get("unverified", [])
+        rule = record.get("citation_rule", ANY_RUN)
+        if (
+            not isinstance(projections, Mapping)
+            or not isinstance(citations, list)
+            or not isinstance(unverified, list)
+            or not isinstance(rule, str)
+        ):
+            raise RenderRefused("DELIVERABLE_PAYLOAD_INVALID")
+        self.projections = projections
+        self.citations = citations
+        self.unverified = unverified
+        self.rule = rule
+        self.provenance = {
+            "module_id": _text(projections, "module_id"),
+            "build_id": _text(record, "build_id"),
+            "authority_digest": _text(record, "authority_digest"),
+        }
+
+
+def canonical_bound(artifact: Mapping[str, Any]) -> bool:
+    """Whether the Markdown and record text hash to the pair the payload binds,
+    and the record names that Markdown. Standard library only, like the package.
+    """
+    if not isinstance(artifact, Mapping):
+        return False
+    markdown, record = artifact.get("markdown"), artifact.get("record")
+    if not isinstance(markdown, str) or not isinstance(record, str):
+        return False
+    try:
+        document = json.loads(record)
+    except ValueError:
+        return False
+    digest = artifact.get("artifact_sha256")
+    return (
+        hashlib.sha256(markdown.encode("utf-8")).hexdigest() == digest
+        and hashlib.sha256(record.encode("utf-8")).hexdigest()
+        == artifact.get("record_sha256")
+        and isinstance(document, dict)
+        and document.get("artifact_sha256") == digest
+    )
+
+
+def _canonical(artifact: Mapping[str, Any]) -> _Handoff:
+    if not canonical_bound(artifact):
+        raise RenderRefused("DELIVERABLE_PAYLOAD_INVALID")
+    return _Handoff(str(artifact["markdown"]), json.loads(str(artifact["record"])))
+
+
+def _handoff(view: _Handoff) -> str:
+    """The Markdown as text, never markup, beside what qualifies it.
+
+    A `Restricted` handoff keeps its limitations on the page, and a
+    `SCREENING_ONLY` scope is labelled a screen whatever committee status the
+    module wrote: the vendor maps no status to that scope, so the page must.
+    """
+    facts = view.projections
+    qa = escape(_text(facts, "qa_status"))
+    committee = escape(_text(facts, "committee_status"))
+    scope = _text(facts, "decision_scope")
+    flags = facts.get("limitation_flags")
+    if not isinstance(flags, list) or not all(isinstance(f, str) for f in flags):
+        raise RenderRefused("DELIVERABLE_PAYLOAD_INVALID")
+    # A module whose every citation is unverified still renders, each one
+    # labelled (D106); one that cites nothing at all does not.
+    if not view.citations and not view.unverified:
+        raise RenderRefused("DELIVERABLE_UNCITED_FIGURE")
+    screen = (
+        '<p class="status">SCREENING ONLY: a screen, not committee clearance</p>\n'
+        if scope == SCREENING_ONLY
+        else ""
+    )
+    limitations = (
+        "<h3>Limitations</h3>\n<ul>\n"
+        + "\n".join(f"<li>{escape(flag)}</li>" for flag in flags)
+        + "\n</ul>\n"
+        if flags
+        else ""
+    )
+    return (
+        f"<h2>{escape(view.provenance['module_id'])}</h2>\n"
+        f'<p class="status">QA status: {qa}</p>\n'
+        f"<p>Committee status as written: {committee} · "
+        f"decision scope {escape(scope)}</p>\n"
+        f"{screen}{limitations}"
+        # §45.6: what the model wrote, what the host computed, and what the
+        # host located, never mixed -- the last as a compact appendix (D107),
+        # so no source text sits among the analysis.
+        "<h3>Analysis (model-authored, not host-verified)</h3>\n"
+        # The elements of `ELEMENTS`, every authored character escaped inside
+        # them: committee layout, with nothing the model wrote reaching the
+        # page as markup this file did not write. Its `[C<n>]` markers are
+        # text, which the appendix below resolves.
+        f"{_markdown(view.markdown)}"
+        "<h3>Deterministic calculations</h3>\n"
+        + (
+            "<p>CP-CF forecast projection performed by the host.</p>\n"
+            if _text(facts, "module_id") == "CP-CF"
+            else "<p>None performed by the host on this route.</p>\n"
+        )
+        + _appendix(view)
+    )
+
+
+# The closed element set the handoff Markdown is rendered as. Nothing else
+# becomes markup: a construct outside this list either reaches the page as the
+# characters the model wrote -- which is what the `<pre>` before it did for the
+# whole document, and what `test_the_page_keeps_limitations_labels_screens_and`
+# `_escapes_model_text` has always required of raw HTML -- or, where the block
+# is structurally incomplete and no faithful rendering of it exists, refuses.
+# Named here so a reader checks the page against a list rather than a parser.
+ELEMENTS = (
+    "front matter",
+    "heading",
+    "paragraph",
+    "table",
+    "unordered list",
+    "ordered list",
+    "blockquote",
+    "code block",
+    "thematic break",
+    "strong",
+    "emphasis",
+    "code span",
+)
+# Authored headings sit under the page's own <h3> section headings, so authored
+# level 1 lands at <h4>; HTML stops at 6, and the level the module wrote is
+# kept as an attribute rather than normalised away.
+_HEADING_BASE = 3
+_MAX_HEADING = 6
+# ponytail: lists nest four deep. Deeper than that is refused rather than
+# flattened, because a flattened list states a structure the module did not.
+_MAX_NESTING = 4
+# Possessive `\s++`: the trailing `(.*)$` can match anything up to the same
+# newline-free end `\s+` would also match, so backtracking into the leading
+# run is never needed for a real match -- only for the VM to search it, which
+# is what made these super-linear on crafted whitespace. `++` closes that off.
+_HEADING = re.compile(r"^(#{1,6})\s++(.*)$")
+_UNORDERED = re.compile(r"^([-*+])\s++(.*)$")
+_ORDERED = re.compile(r"^([0-9]{1,3}[.)])\s++(.*)$")
+# A table's delimiter row. `_block` also requires it to contain a `|`, because
+# this pattern matches a bare `---` -- so a prose line carrying a pipe followed
+# by a thematic break used to be read as a one-column table, and the page then
+# asserted a table with an empty body that the module never wrote. Fabrication
+# is worse than the deletions beside it: a reader cannot tell it from a table
+# the model authored.
+_DELIMITER = re.compile(r"^\|?\s*:?-{1,}:?\s*(\|\s*:?-{1,}:?\s*)*\|?$")
+# `*` and backticks only. `_` is left alone because identifiers carry it --
+# `net_debt_to_ebitda` is a word in this domain, not two emphasis runs.
+_INLINE = re.compile(r"(\*\*|\*|`)")
+
+
+def _markdown(text: str) -> str:
+    """The handoff Markdown as the elements named in `ELEMENTS`.
+
+    Not a Markdown implementation: a closed reader for the constrained document
+    the methodology bundle's own validators accept. Every authored character it
+    emits is escaped, so no model-authored byte reaches the page as markup this
+    file did not write.
+    """
+    lines = text.split("\n")
+    out: list[str] = []
+    index = 0
+    if lines and lines[0].rstrip() == "---":
+        index = _front_matter(lines, out)
+    while index < len(lines):
+        index = _block(lines, index, out)
+    return "".join(out)
+
+
+def _front_matter(lines: list[str], out: list[str]) -> int:
+    """The host-owned front matter, shown as the data it is.
+
+    It is not prose, and the page projects its fields above it; printed whole
+    and unchanged it stays checkable against the record.
+    """
+    for end in range(1, len(lines)):
+        if lines[end].rstrip() == "---":
+            block = "\n".join(lines[1:end])
+            out.append(f'<pre class="front">{escape(block)}</pre>\n')
+            return end + 1
+    raise RenderRefused("DELIVERABLE_MARKDOWN_UNSUPPORTED")
+
+
+def _block(lines: list[str], index: int, out: list[str]) -> int:
+    """One block from `index`, appended to `out`; returns the next index."""
+    line = lines[index]
+    if not line.strip():
+        return index + 1
+    if line.lstrip().startswith("<!--"):
+        return _comment(lines, index, out)
+    if line.startswith("```"):
+        return _code(lines, index, out)
+    if line.rstrip() in {"---", "***", "___"}:
+        out.append("<hr>\n")
+        return index + 1
+    heading = _HEADING.match(line)
+    if heading is not None:
+        level = len(heading.group(1))
+        tag = f"h{min(level + _HEADING_BASE, _MAX_HEADING)}"
+        out.append(f'<{tag} data-level="{level}">{_inline(heading.group(2))}</{tag}>\n')
+        return index + 1
+    if line.lstrip().startswith(">"):
+        return _quote(lines, index, out)
+    if _item(line) is not None:
+        return _list(lines, index, out)
+    if (
+        "|" in line
+        and index + 1 < len(lines)
+        and "|" in lines[index + 1]
+        and _DELIMITER.match(lines[index + 1])
+    ):
+        return _table(lines, index, out)
+    return _paragraph(lines, index, out)
+
+
+def _comment(lines: list[str], index: int, out: list[str]) -> int:
+    """An HTML comment reaches the page as the characters the model wrote.
+
+    It used to be consumed and emit nothing, on the reasoning that a comment is
+    "invisible in any reading of it". That is true of a Markdown renderer and
+    false here. A signer's `payload_sha256` binds the record's bytes, and this
+    is the only rendering of them a committee reads, so a construct that
+    vanished took model-authored text out of the document the signature covers
+    -- a MATERIAL caveat written as a comment would have been bound and unseen.
+    Every other construct outside `ELEMENTS` reaches the page escaped; this one
+    now does too, which is the rule this file already states.
+    """
+    for end in range(index, len(lines)):
+        if "-->" in lines[end]:
+            block = "\n".join(lines[index : end + 1])
+            out.append(f"<pre>{escape(block)}</pre>\n")
+            return end + 1
+    raise RenderRefused("DELIVERABLE_MARKDOWN_UNSUPPORTED")
+
+
+def _code(lines: list[str], index: int, out: list[str]) -> int:
+    """A fenced block, with both fence lines' own text kept.
+
+    The info string was discarded, and `caos-forecast-v1` is *the* label of the
+    CP-CF forecast block -- so the first deliverable carrying one showed a
+    committee an unlabelled JSON blob. Text after the closing fence was
+    discarded too. Both are authored characters, and this module's contract is
+    that authored characters reach the page or the block refuses.
+    """
+    info = lines[index][3:].strip()
+    for end in range(index + 1, len(lines)):
+        if lines[end].startswith("```"):
+            block = "\n".join(lines[index + 1 : end])
+            tail = lines[end][3:].strip()
+            label = f'<p class="cite">{escape(info)}</p>\n' if info else ""
+            after = f'<p class="cite">{escape(tail)}</p>\n' if tail else ""
+            out.append(f"{label}<pre><code>{escape(block)}</code></pre>\n{after}")
+            return end + 1
+    raise RenderRefused("DELIVERABLE_MARKDOWN_UNSUPPORTED")
+
+
+def _quote(lines: list[str], index: int, out: list[str]) -> int:
+    quoted: list[str] = []
+    while index < len(lines) and lines[index].lstrip().startswith(">"):
+        quoted.append(lines[index].lstrip()[1:].strip())
+        index += 1
+    out.append(f"<blockquote>{_inline(' '.join(quoted))}</blockquote>\n")
+    return index
+
+
+def _item(line: str) -> tuple[int, bool, str, str] | None:
+    """One list item as (indent, ordered, marker, text), or None otherwise.
+
+    The marker is carried because an ordinal is a fact the model wrote: a
+    register numbered 7, 8, 9 renumbered itself to 1, 2, 3 on the page, which
+    is the deletion class §77.3 forbids, arrived at through a default rather
+    than through a discard.
+    """
+    stripped = line.lstrip(" ")
+    indent = len(line) - len(stripped)
+    ordered = _ORDERED.match(stripped)
+    if ordered is not None:
+        return indent, True, ordered.group(1), ordered.group(2)
+    unordered = _UNORDERED.match(stripped)
+    if unordered is not None:
+        return indent, False, unordered.group(1), unordered.group(2)
+    return None
+
+
+def _list(lines: list[str], index: int, out: list[str]) -> int:
+    """A list, nested by indentation. Each level opens and closes in order, so
+    the page never carries an element this function did not close."""
+    levels: list[tuple[int, str]] = []
+    # Per indent level, the marker a consecutive run would use next.
+    expected: dict[int, str] = {}
+    while index < len(lines):
+        item = _item(lines[index])
+        if item is None or not lines[index].strip():
+            break
+        indent, ordered, marker, text = item
+        _close_deeper(levels, indent, out)
+        if not levels or indent > levels[-1][0]:
+            _open_level(levels, expected, item, out)
+        prefix = _ordinal(expected, levels[-1][0], marker) if ordered else ""
+        out.append(f"<li>{prefix}{_inline(text)}</li>\n")
+        index += 1
+    _close_deeper(levels, -1, out)
+    return index
+
+
+def _close_deeper(levels: list[tuple[int, str]], indent: int, out: list[str]) -> None:
+    """Close every open level deeper than `indent`, innermost first."""
+    while levels and indent < levels[-1][0]:
+        out.append(f"</{levels.pop()[1]}>\n")
+
+
+def _open_level(
+    levels: list[tuple[int, str]],
+    expected: dict[int, str],
+    item: tuple[int, bool, str, str],
+    out: list[str],
+) -> None:
+    """Open a level for `item`'s indent, an ordered one starting where its
+    first marker does; nesting past `_MAX_NESTING` is refused, not flattened."""
+    indent, ordered, marker, _ = item
+    if len(levels) == _MAX_NESTING:
+        raise RenderRefused("DELIVERABLE_MARKDOWN_UNSUPPORTED")
+    tag = "ol" if ordered else "ul"
+    levels.append((indent, tag))
+    start = ""
+    if ordered:
+        first = marker[:-1]
+        start = f' start="{escape(first)}"' if first != "1" else ""
+        expected[indent] = marker
+    out.append(f"<{tag}{start}>\n")
+
+
+def _ordinal(expected: dict[int, str], level: int, marker: str) -> str:
+    """The marker to write before an ordered item's text, and the marker the
+    level's run expects next.
+
+    An `<ol start="N">` numbers sequentially from N, so it draws the ordinals
+    the model wrote only while they *are* sequential. A register numbered 7, 9
+    would be drawn 7, 8 -- a number on the page that nobody authored, which is
+    the fabrication class. Where the run is not consecutive each marker is
+    written as its own characters instead."""
+    prefix = f"{escape(marker)} " if marker != expected.get(level) else ""
+    head = marker[:-1]
+    expected[level] = f"{int(head) + 1}{marker[-1]}" if head.isdigit() else ""
+    return prefix
+
+
+def _table(lines: list[str], index: int, out: list[str]) -> int:
+    header = _cells(lines[index])
+    index += 2
+    rows: list[str] = []
+    while index < len(lines) and "|" in lines[index] and lines[index].strip():
+        cells = _cells(lines[index])
+        if len(cells) != len(header):
+            # A row that does not fit its header has no faithful rendering:
+            # padding it would invent a cell and dropping one would lose a fact.
+            raise RenderRefused("DELIVERABLE_MARKDOWN_UNSUPPORTED")
+        rows.append("<tr>" + "".join(f"<td>{_inline(c)}</td>" for c in cells) + "</tr>")
+        index += 1
+    head = "".join(f"<th>{_inline(c)}</th>" for c in header)
+    out.append(
+        "<table>\n<thead><tr>"
+        + head
+        + "</tr></thead>\n<tbody>\n"
+        + "\n".join(rows)
+        + "\n</tbody>\n</table>\n"
+    )
+    return index
+
+
+def _cells(line: str) -> list[str]:
+    stripped = line.strip()
+    if stripped.startswith("|"):
+        stripped = stripped[1:]
+    if stripped.endswith("|"):
+        stripped = stripped[:-1]
+    return [cell.strip() for cell in stripped.split("|")]
+
+
+def _paragraph(lines: list[str], index: int, out: list[str]) -> int:
+    held: list[str] = []
+    while index < len(lines) and lines[index].strip():
+        line = lines[index]
+        if held and (_HEADING.match(line) or _item(line) is not None):
+            break
+        if line.startswith("```") or line.lstrip().startswith("<!--"):
+            break
+        held.append(line.strip())
+        index += 1
+    out.append(f"<p>{_inline(' '.join(held))}</p>\n")
+    return index
+
+
+def _inline(text: str) -> str:
+    """Strong, emphasis and code spans; every other character as itself.
+
+    Nothing here builds an element from an attribute or a URL, so a link, an
+    image or a tag in model-authored prose reaches the page escaped -- visible
+    as what the model wrote, and inert. A delimiter is a delimiter only where
+    Markdown's own flanking rule says so (`2 * 3` is arithmetic), and a run
+    that never pairs makes the whole text literal rather than half-rendered.
+
+    Two rules this function used to get wrong, found by the Completion Phase 12
+    confidence review. **A code span's contents are literal**: `` `a*b*c` ``
+    rendered as `<code>a<em>b</em>c</code>`, which dropped the two asterisks the
+    model wrote from the page -- the same defect as deleting a comment, inside
+    a construct `ELEMENTS` names and Markdown defines as literal. And
+    **delimiters close in the order they opened**: `*a **b* c**` produced
+    `<em>a <strong>b</em> c</strong>`, which is not well-formed. A delimiter
+    that would close out of order is not a delimiter, which leaves its opener
+    unpaired and makes the whole text literal -- the fallback this function
+    already had.
+    """
+    pieces = _INLINE.split(text)
+    marks: list[str] = []
+    spans: list[str] = []
+    for position, piece in enumerate(pieces):
+        if position % 2 == 0:  # `re.split` alternates text and delimiter
+            spans.append(escape(piece))
+            continue
+        if marks and marks[-1] == "`" and piece != "`":
+            # Inside a code span nothing is a delimiter.
+            spans.append(escape(piece))
+            continue
+        spans.append(_delimiter(piece, pieces, position, marks))
+    return escape(text) if marks else "".join(spans)
+
+
+def _delimiter(piece: str, pieces: list[str], position: int, marks: list[str]) -> str:
+    """One delimiter as a tag or as itself, by what sits either side of it.
+
+    A run closes only the innermost open delimiter (`marks[-1]`); one that
+    matches an outer opener is written as itself, which leaves that opener
+    unpaired and sends `_inline` to its literal fallback rather than emitting
+    mis-nested tags.
+    """
+    tag = {"**": "strong", "*": "em", "`": "code"}[piece]
+    before, after = pieces[position - 1], pieces[position + 1]
+    if piece in marks:
+        if marks[-1] != piece:
+            return escape(piece)
+        if tag == "code" or (before and not before[-1].isspace()):
+            marks.pop()
+            return f"</{tag}>"
+        return escape(piece)
+    if tag == "code" or (after and not after[0].isspace()):
+        marks.append(piece)
+        return f"<{tag}>"
+    return escape(piece)
+
+
+def _appendix(view: _Handoff) -> str:
+    """The module's citations appendix (D107; owner: "The deliverable lists
+    citations compactly in an appendix rather than inline full lines"): one
+    line each, anchored and unverified alike, in the answer's list order
+    where the record keeps each citation's marker (an older record: the
+    anchored ones, then the unverified). The analysis above cites them by
+    the same `[C<n>]`."""
+    rows = sorted(
+        [
+            (_marker(entry), 0, index, located(entry, _line_of(entry), view.rule))
+            for index, entry in enumerate(view.citations)
+        ]
+        + [
+            (_marker(entry), 1, index, unverified(entry))
+            for index, entry in enumerate(view.unverified)
+        ],
+        key=lambda row: (row[0] or 0, row[1], row[2]),
+    )
+    return (
+        '<h3>Citations</h3>\n<ul class="cite">\n'
+        + "\n".join(f"<li>{text}</li>" for *_, text in rows)
+        + "\n</ul>\n"
+    )
+
+
+def _marker(entry: object) -> int | None:
+    """A citation's place in its answer's list, the `[C<n>]` its module's
+    body cites it by (D107); none on a record from before markers."""
+    if not isinstance(entry, Mapping):
+        raise RenderRefused("DELIVERABLE_PAYLOAD_INVALID")
+    value = entry.get("marker")
+    if value is None:
+        return None
+    if not isinstance(value, int) or isinstance(value, bool) or value < 1:
+        raise RenderRefused("DELIVERABLE_PAYLOAD_INVALID")
+    return value
+
+
+def _tag(entry: object) -> str:
+    marker = _marker(entry)
+    return "" if marker is None else f"[C{marker}] · "
+
+
+# The longest excerpt the page shows (D107): about one line, as the workspace
+# clamps it (`frontend/src/evidence/compact.ts`).
+EXCERPT_CHARS = 120
+# What the workspace's `\s` is, so both clamp a quote to the same text.
+_SPACE = re.compile(
+    "[\t\n\x0b\x0c\r \xa0\u1680\u2000-\u200a\u2028\u2029\u202f\u205f\u3000\ufeff]+"
+)
+
+
+def clamped(quote: str) -> str:
+    """`quote` as the page shows it (D107): its whitespace runs single, and
+    past `EXCERPT_CHARS` code points cut with an ellipsis. The whole line is
+    the source's to show, at the page the citation names."""
+    flat = " ".join(word for word in _SPACE.split(quote) if word)
+    if len(flat) <= EXCERPT_CHARS:
+        return flat
+    return flat[: EXCERPT_CHARS - 1].rstrip(" ") + "\u2026"
+
+
+def _quoted(quote: str) -> str:
+    return f"\u201c{escape(clamped(quote))}\u201d"
+
+
+def _notes(citation: Mapping[str, Any], line: object, rule: str) -> str:
+    """What a host-verified citation's compact line adds after it: that its
+    source line was never recorded (an `ANY_RUN` quote, F504), and that no
+    statement of the answer cites it (`linked` false, D106, D107)."""
+    if line is not None and (not isinstance(line, str) or not line):
+        raise RenderRefused("DELIVERABLE_PAYLOAD_INVALID")
+    if citation.get("linked", True) not in (True, False):
+        raise RenderRefused("DELIVERABLE_PAYLOAD_INVALID")
+    recorded = line is not None or rule in _WHOLE_LINE_RULES
+    return ("" if recorded else " · quote (source line not recorded)") + (
+        " · not linked to a statement in the answer"
+        if citation.get("linked", True) is False
+        else ""
+    )
+
+
+def located(citation: object, line: object = None, rule: str = ANY_RUN) -> str:
+    """One host-verified citation, compact (D107): its marker, document,
+    page and excerpt, every character escaped. Its whole line is not on the
+    page: an excerpt is eight words of one line, and a qualifier just
+    outside them ("not", "provided that") is the reader's to see at the
+    source, on the page given (AI-4's guard, one look away). `line` is the
+    record's `line_text`, checked, never shown."""
+    if not isinstance(citation, Mapping):
+        raise RenderRefused("DELIVERABLE_PAYLOAD_INVALID")
+    quote = _text(citation, "matched_text")
+    document = escape(_text(citation, "document_sha256")[:12])  # cut, then escape
+    page = _page(citation)
+    notes = _notes(citation, line, rule)
+    return (
+        f"{_tag(citation)}{document} · page {page} · {_quoted(quote)} · verified{notes}"
+    )
+
+
+# Why a citation is unverified (D106), in the reader's words: the anchoring
+# refusal that left it so (`handoff.UNVERIFIED_CODES`).
+UNVERIFIED_REASONS = {
+    "CITATION_NOT_LOCATED": "not located",
+    "CITATION_AMBIGUOUS": "ambiguous",
+    "CITATION_NOT_DELIVERED": "not in the delivered evidence",
+}
+
+
+def unverified(entry: object, tag: str | None = None) -> str:
+    """One unverified citation (D106), compact (D107): labelled before its
+    text, as the model's quote, never placed or worded as a located one. Its
+    claim is Deploy V's lineage class "Untraced". Every character is
+    escaped: the quote is the model's, which the host could not find. One
+    no statement of the answer cites (`linked` false) says so beside its
+    reason. `tag` names it where its marker alone would not (a narrative)."""
+    if not isinstance(entry, Mapping):
+        raise RenderRefused("DELIVERABLE_PAYLOAD_INVALID")
+    quote = _text(entry, "matched_text")
+    source = escape(_text(entry, "source_id"))
+    page = _page(entry)
+    reason = UNVERIFIED_REASONS.get(_text(entry, "code"))
+    if reason is None or entry.get("linked", True) not in (True, False):
+        raise RenderRefused("DELIVERABLE_PAYLOAD_INVALID")
+    if entry.get("linked", True) is False:
+        reason += " · not linked to a statement in the answer"
+    return (
+        f"{_tag(entry) if tag is None else tag}unverified \u2013 page {page}"
+        f" · source {source} · the model's quote {_quoted(quote)}"
+        f" · claim lineage: Untraced · {reason}"
+    )
+
+
+# The edge punctuation a quote's first and last word may differ from its line
+# by, and what a word with a figure keeps (`caos.evidence.citations`'
+# `EDGE_PUNCTUATION`, `_FIGURE_LEFT`, `_FIGURE_RIGHT`; restated, because this
+# file is the standard library alone, and held equal by a test).
+EDGE_PUNCTUATION = "\"'\u201c\u201d\u2018\u2019()[]{}.,;:!?"
+_FIGURE_LEFT = EDGE_PUNCTUATION.replace("(", "").replace(".", "")
+_FIGURE_RIGHT = EDGE_PUNCTUATION.replace(")", "")
+
+
+def traced_line(line: str, quote: str) -> tuple[str, str, str]:
+    """`line` split around the one place `quote` is in it: the text before,
+    the line's own text of the excerpt, and the text after.
+
+    Found as the host anchored it (D105), within this one line: the quote's
+    words NFC against the line's, every one equal; then the first and last
+    forgiven their edge punctuation, a figure keeping its parentheses and
+    leading point; then with runs of single letters joined, as a tracked
+    heading is. A pass that finds two places marks none, and so does finding
+    none: the line is `(line, "", "")`, shown whole and unmarked rather than
+    marked where the host did not anchor. The page shows no line since D107;
+    the wire's `LineView` splits one with this for the source drawer, which
+    alone shows it.
+    """
+    words = [unicodedata.normalize("NFC", word) for word in quote.split()]
+    spans = [(found.start(), found.end()) for found in re.finditer(r"\S+", line)]
+    for joined, edges in ((False, False), (False, True), (True, True)):
+        units = _units(line, spans, joined=joined)
+        places = _places([key for _, _, key in units], words, edges=edges)
+        if len(places) > 1:
+            break
+        if places:
+            first, last = units[places[0]][0], units[places[0] + len(words) - 1][1]
+            return line[:first], line[first:last], line[last:]
+    return line, "", ""
+
+
+def _units(
+    line: str, spans: list[tuple[int, int]], *, joined: bool
+) -> list[tuple[int, int, str]]:
+    """The line's words as `(start, end, NFC text)`; joined, each run of
+    single-character words that are not digits made one, as
+    `citations._joined_tracking` joins a tracked heading's letters."""
+    units: list[tuple[int, int, str, bool]] = []
+    for start, end in spans:
+        word = unicodedata.normalize("NFC", line[start:end])
+        single = len(word) == 1 and not word.isdigit()
+        last = units[-1] if units else None
+        if joined and single and last is not None and last[3]:
+            units[-1] = (last[0], end, last[2] + word, True)
+        else:
+            units.append((start, end, word, single))
+    return [(start, end, key) for start, end, key, _single in units]
+
+
+def _places(keys: list[str], words: list[str], *, edges: bool) -> list[int]:
+    """Every index at which `words` run as consecutive `keys`: all equal, or
+    with `edges` the interior equal and the first and last edge-forgiven."""
+    width = len(words)
+    if not width:
+        return []
+    inner = slice(1, width - 1) if edges else slice(0, width)
+    return [
+        at
+        for at in range(len(keys) - width + 1)
+        if keys[at : at + width][inner] == words[inner]
+        and (
+            not edges
+            or (_edge(keys[at], words[0]) and _edge(keys[at + width - 1], words[-1]))
+        )
+    ]
+
+
+def _edge(key: str, word: str) -> bool:
+    stripped = _stripped(word)
+    return key == word or (bool(stripped) and _stripped(key) == stripped)
+
+
+def _stripped(word: str) -> str:
+    """A word less the punctuation a sentence puts around it; a word with a
+    digit in it keeps what would change its figure (EV-4)."""
+    core = word.strip(EDGE_PUNCTUATION)
+    if not any(character.isdigit() for character in core):
+        return core
+    return word.lstrip(_FIGURE_LEFT).rstrip(_FIGURE_RIGHT)
+
+
+def _line_of(citation: object) -> object:
+    return citation.get("line_text") if isinstance(citation, Mapping) else None
+
+
+def _page(citation: Mapping[str, Any]) -> str:
+    """A citation's page, refused when absent -- as `matched_text` and
+    `document_sha256` beside it already were. Printed as `page ` with nothing
+    after it, an absent page read as a page the reader could go and check."""
+    value = citation.get("page")
+    if not isinstance(value, int) or isinstance(value, bool) or value < 1:
+        raise RenderRefused("DELIVERABLE_PAYLOAD_INVALID")
+    return str(value)
+
+
+def _narrative(narrative: object, cited: Mapping[str, _Handoff]) -> str:
+    if narrative is None or narrative == []:
+        return ""
+    # Historical payloads remain renderable; the save boundary accepts only spans.
+    if isinstance(narrative, str):
+        return f"<h2>Analyst narrative</h2>\n<p>{escape(narrative)}</p>\n"
+    if not isinstance(narrative, list) or len(narrative) > 64:
+        raise RenderRefused("DELIVERABLE_PAYLOAD_INVALID")
+    paragraphs = []
+    for paragraph in narrative:
+        if not isinstance(paragraph, list) or not 1 <= len(paragraph) <= 64:
+            raise RenderRefused("DELIVERABLE_PAYLOAD_INVALID")
+        paragraphs.append(
+            "<div>" + "".join(_span(span, cited) for span in paragraph) + "</div>\n"
+        )
+    return "<h2>Analyst narrative</h2>\n" + "".join(paragraphs)
+
+
+def _span(span: object, cited: Mapping[str, _Handoff]) -> str:
+    """Prose, a figure (an anchored citation), or an unverified figure (D106,
+    owner: "Labelled unverified too"), which is shown labelled as one."""
+    if isinstance(span, Mapping):
+        if set(span) == {"text"} and isinstance(span["text"], str):
+            return escape(span["text"])
+        if set(span) == {"figure"}:
+            return _figure(span["figure"], cited)
+        if set(span) == {"unverified"}:
+            entry = span["unverified"]
+            if not isinstance(entry, Mapping):
+                raise RenderRefused("DELIVERABLE_PAYLOAD_INVALID")
+            view = cited.get(str(entry.get("route_node_id")))
+            named = _named(entry, view, "unverified_index", _UNVERIFIED_KEYS)
+            text = unverified(
+                {**entry, "linked": named.get("linked", True)},
+                f"[{_reference(entry, view, named)}] · ",
+            )
+            return f'<span class="cite">{text}</span>'
+    raise RenderRefused("DELIVERABLE_PAYLOAD_INVALID")
+
+
+def _figure(figure: object, cited: Mapping[str, _Handoff]) -> str:
+    """A narrative figure, compact (D107): its excerpt, then a reference to
+    its module's citation (`[CP-1 C3]`, which that module's appendix lists),
+    its document and page; whether a statement of the answer cites it is
+    read from the record, and its line is checked there, never shown."""
+    if not isinstance(figure, Mapping):
+        raise RenderRefused("DELIVERABLE_PAYLOAD_INVALID")
+    view = cited.get(str(figure.get("route_node_id")))
+    named = _named(figure, view, "citation_index", _FIGURE_KEYS)
+    quote = _text(figure, "matched_text")
+    document = escape(_text(figure, "document_sha256")[:12])
+    page = _page(figure)
+    notes = _notes(
+        {**figure, "linked": named.get("linked", True)},
+        named.get("line_text"),
+        ANY_RUN if view is None else view.rule,
+    )
+    return (
+        f'{_quoted(quote)} <span class="cite">[{_reference(figure, view, named)}]'
+        f" · {document} · page {page}{notes}</span>"
+    )
+
+
+def _reference(
+    figure: Mapping[str, Any], view: _Handoff | None, named: Mapping[str, Any]
+) -> str:
+    """How a narrative names a module's citation: the module the appendix is
+    headed by, and the citation's marker where its record keeps one."""
+    module = (
+        view.provenance["module_id"]
+        if view is not None
+        else _text(figure, "route_node_id")
+    )
+    marker = _marker(named)
+    return escape(module) + ("" if marker is None else f" C{marker}")
+
+
+# What a narrative figure copies from the record entry it names.
+_FIGURE_KEYS = ("document_sha256", "page", "matched_text")
+_UNVERIFIED_KEYS = ("source_id", "page", "matched_text", "code")
+
+
+def _named(
+    figure: object, view: _Handoff | None, key: str, fields: tuple[str, ...]
+) -> Mapping[str, Any]:
+    """The record entry a narrative figure names -- an anchored citation
+    (`citation_index`) or an unverified one (`unverified_index`) -- or an
+    empty mapping where the figure names none this payload carries with its
+    own copy (a payload `verify_package` reports). What the figure shows of
+    the record beyond its copy -- the line an excerpt anchored in (D105), and
+    whether the answer's body carries the quote (`linked`, D106) -- is read
+    from there, never borrowed from another entry."""
+    if not isinstance(figure, Mapping) or view is None:
+        return {}
+    index = figure.get(key)
+    entries = view.citations if key == "citation_index" else view.unverified
+    if type(index) is not int or not 0 <= index < len(entries):
+        return {}
+    entry = entries[index]
+    if not isinstance(entry, Mapping) or any(
+        entry.get(field) != figure.get(field) for field in fields
+    ):
+        return {}
+    return entry
+
+
+def _provenance(artifacts: Sequence[object]) -> str:
+    """Which module produced what, under which build and authority.
+
+    Not decoration: it is how a reader checks that the page in front of them came
+    from the methodology the run was pinned to.
+    """
+    rows = "\n".join(
+        f"<li>{escape(_text(artifact, 'module_id'))} · "
+        f"build {escape(_text(artifact, 'build_id')[:12])} · "
+        f"authority {escape(_text(artifact, 'authority_digest')[:12])}</li>"
+        for artifact in artifacts
+        if isinstance(artifact, Mapping)
+    )
+    return f"<h2>Module provenance</h2>\n<ul>\n{rows}\n</ul>\n"
+
+
+def _text(mapping: Mapping[str, Any], key: str) -> str:
+    value = mapping.get(key)
+    if not isinstance(value, str) or not value:
+        raise RenderRefused("DELIVERABLE_PAYLOAD_INVALID")
+    return value

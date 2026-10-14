@@ -1,0 +1,105 @@
+{
+  "cases": [
+    {
+      "label": "czr-2026q2-lite-portfolio",
+      "profile_id": "LITE_CREDIT_22",
+      "selection_id": "LITE_PORTFOLIO_DECISION",
+      "subject": {
+        "issuer_id": "CZR",
+        "issuer_name": "Caesars Entertainment, Inc.",
+        "reporting_period": "Q2 2026",
+        "analysis_date": "2026-10-02"
+      },
+      "documents": [
+        "documents/CZR_Q2_2026_10Q.txt",
+        "documents/CZR_Q2_2026_Earnings_Release.txt",
+        "documents/FHSUHY_NPORT_Schedule_of_Investments_2026-06-30.txt",
+        "documents/FHSUHY_Prospectus_and_SAI_2026-05-26.txt",
+        "documents/CZR_FINRA_TRACE_12769GAC4_2026-10-02.txt",
+        "documents/CZR_2024_650_Senior_Secured_Notes_2032_Indenture.txt",
+        "documents/CZR_2024_650_Notes_First_Supplemental_Indenture.txt",
+        "documents/CZR_2024_650_Notes_Second_Supplemental_Indenture.txt"
+      ],
+      "expects": [
+        {
+          "module_id": "CP-L10",
+          "document_sha256": "f369ce5f1ebeddd9a0d4ce02ce3958112267d8701d1a348dfd6dc82d2034793a",
+          "matched_text": "As of June 30, 2026, the Company had $1.9 billion of available borrowing capacity under the CEI Revolving Credit Facility, after consideration of $96 million in outstanding letters of credit, $56 million committed for regulatory purposes, the outstanding amount, and the reserves described above."
+        },
+        {
+          "module_id": "CP-L10",
+          "document_sha256": "b385f76ff631243d1053fa8073ebde4f8886b4a50c9ce34ce3498d6b2ac3e9f8",
+          "matched_text": "Adjusted EBITDA | $920 | $955 | $1,807 | $1,839",
+          "alternatives": [
+            {
+              "document_sha256": "f369ce5f1ebeddd9a0d4ce02ce3958112267d8701d1a348dfd6dc82d2034793a",
+              "matched_text": "Total | $920 | $955 | $1,807 | $1,839"
+            },
+            {
+              "document_sha256": "f369ce5f1ebeddd9a0d4ce02ce3958112267d8701d1a348dfd6dc82d2034793a",
+              "matched_text": "Total Adjusted EBITDA | $920 | $955 | $1,807 | $1,839"
+            },
+            {
+              "document_sha256": "f369ce5f1ebeddd9a0d4ce02ce3958112267d8701d1a348dfd6dc82d2034793a",
+              "matched_text": "Adjusted EBITDA | $920 | $955 | $1,807 | $1,839"
+            },
+            {
+              "document_sha256": "b385f76ff631243d1053fa8073ebde4f8886b4a50c9ce34ce3498d6b2ac3e9f8",
+              "matched_text": "Consolidated Adjusted EBITDA of $920 million versus $955 million for the comparable prior-year period."
+            },
+            {
+              "document_sha256": "b385f76ff631243d1053fa8073ebde4f8886b4a50c9ce34ce3498d6b2ac3e9f8",
+              "matched_text": "Caesars | $920 | $955 | (3.7)%"
+            }
+          ]
+        },
+        {
+          "module_id": "CP-L10",
+          "document_sha256": "e2490912d9cc688135e15732e0fcf4aafd715e91e4d580edd577483535507bab",
+          "matched_text": "550,000 | Caesars Entertainment, Inc., Sr. Secd. Note, 144A, 6.500%, 2/15/2032 | 536,927"
+        },
+        {
+          "module_id": "CP-L10",
+          "document_sha256": "e2490912d9cc688135e15732e0fcf4aafd715e91e4d580edd577483535507bab",
+          "matched_text": "NET ASSETS—100% | $491,554,960"
+        },
+        {
+          "module_id": "CP-L10",
+          "document_sha256": "10455d54958421c56b4902f2fa41bfc08873bb9d16ee9fb22ab31ded215846ea",
+          "matched_text": "The Fund will invest at least 80% of its net assets (plus the amount of any borrowings for investment purposes) in sustainable lower-rated fixed-income investments."
+        },
+        {
+          "module_id": "CP-L10",
+          "document_sha256": "4018aaa62309df6cd66a9b5fc766c4a9429e886e649023de2bad8673baf8aa51",
+          "matched_text": "Last trade price: $93.28"
+        }
+      ],
+      "expects_ready": [
+        "CP-L10"
+      ],
+      "expects_projection": [
+        {
+          "module_id": "CP-L10",
+          "field": "decision_scope",
+          "value": "SCREENING_ONLY"
+        },
+        {
+          "module_id": "CP-L10",
+          "field": "qa_status",
+          "value": "Restricted"
+        }
+      ],
+      "expects_register": [
+        {
+          "module_id": "CP-L10",
+          "register_id": "TL10.2",
+          "row_key": {
+            "topic_id": "LIQUIDITY_MATURITIES"
+          },
+          "column": "evidence_status",
+          "expected": "SUFFICIENT"
+        }
+      ]
+    }
+  ]
+}

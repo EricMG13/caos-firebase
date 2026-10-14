@@ -1,0 +1,146 @@
+{
+  "cases": [
+    {
+      "label": "czr-2026q2-portfolio",
+      "profile_id": "FULL_CREDIT_32",
+      "selection_id": "PORTFOLIO_DECISION",
+      "subject": {
+        "issuer_id": "CZR",
+        "issuer_name": "Caesars Entertainment, Inc.",
+        "reporting_period": "Q2 2026",
+        "analysis_date": "2026-10-02"
+      },
+      "documents": [
+        "documents/CZR_Q2_2026_10Q.txt",
+        "documents/CZR_FY2025_10K.txt",
+        "documents/CZR_2024_Credit_Agreement_Incremental_Assumption_No3.txt",
+        "documents/CZR_2024_650_Senior_Secured_Notes_2032_Indenture.txt",
+        "documents/CZR_2024_650_Notes_First_Supplemental_Indenture.txt",
+        "documents/CZR_2024_650_Notes_Second_Supplemental_Indenture.txt",
+        "documents/CZR_FINRA_TRACE_12769GAC4_2026-10-02.txt",
+        "documents/CZR_FINRA_TRACE_12769GAD2_2026-10-02.txt",
+        "documents/FHSUHY_NPORT_Schedule_of_Investments_2026-06-30.txt",
+        "documents/FHSUHY_Prospectus_and_SAI_2026-05-26.txt"
+      ],
+      "expects": [
+        {
+          "module_id": "CP-1",
+          "document_sha256": "f369ce5f1ebeddd9a0d4ce02ce3958112267d8701d1a348dfd6dc82d2034793a",
+          "matched_text": "Cash and cash equivalents | $965 | $887"
+        },
+        {
+          "module_id": "CP-2",
+          "document_sha256": "f369ce5f1ebeddd9a0d4ce02ce3958112267d8701d1a348dfd6dc82d2034793a",
+          "matched_text": "Net cash provided by operating activities | 675 | 680",
+          "alternatives": [
+            {
+              "document_sha256": "f369ce5f1ebeddd9a0d4ce02ce3958112267d8701d1a348dfd6dc82d2034793a",
+              "matched_text": "During the six months ended June 30, 2026, our operating activities generated operating cash inflows of $675 million, as compared to operating cash inflows of $680 million during the six months ended June 30, 2025, primarily due to changes in working capital, coupled with the results of operations described above."
+            }
+          ]
+        },
+        {
+          "module_id": "CP-2",
+          "document_sha256": "172309048af2a6a2dab515d765f00a7c89bf8c874c6104a5e3a052b66cad4512",
+          "matched_text": "Net cash provided by operating activities | 1,302 | 1,075 | 1,809"
+        },
+        {
+          "module_id": "CP-4",
+          "document_sha256": "f369ce5f1ebeddd9a0d4ce02ce3958112267d8701d1a348dfd6dc82d2034793a",
+          "matched_text": "The CEI Revolving Credit Facility, the CEI Term Loan A, the CEI Term Loan B, the CEI Term Loan B-1, the CEI Senior Secured Notes due 2030 and the CEI Senior Secured Notes due 2032 are guaranteed on a senior secured basis by each existing and future material wholly-owned domestic subsidiary of the Company and are secured by substantially all of the existing and future property and assets of the Company and its subsidiary guarantors (subject to certain exceptions)."
+        },
+        {
+          "module_id": "CP-4",
+          "document_sha256": "f369ce5f1ebeddd9a0d4ce02ce3958112267d8701d1a348dfd6dc82d2034793a",
+          "matched_text": "The CEI Senior Notes due 2029 and the CEI Senior Notes due 2032 are guaranteed on a senior unsecured basis by such subsidiaries."
+        },
+        {
+          "module_id": "CP-4",
+          "document_sha256": "0809ab3981090bd2c23950da9530adb10e96882ddfa7db4404635e014d4c1119",
+          "matched_text": "The aggregate principal amount of Notes which may be authenticated and delivered under this Indenture on the Issue Date is $1,500,000,000."
+        },
+        {
+          "module_id": "CP-4",
+          "document_sha256": "0809ab3981090bd2c23950da9530adb10e96882ddfa7db4404635e014d4c1119",
+          "matched_text": "(a) Upon the occurrence of a Change of Control, each holder shall have the right to require the Company to repurchase all or any part of such holder’s Notes at a purchase price in cash equal to 101% of the principal amount thereof, plus accrued and unpaid interest, if any, to, but excluding, the date of repurchase (subject to the right of the holders of record on the relevant Record Date to receive interest due on the relevant Interest Payment Date), in accordance with the terms contemplated in this Section 4.08;"
+        },
+        {
+          "module_id": "CP-4",
+          "document_sha256": "25bea1d14fd9bb22838775f6fe056cd00741dc3d50eb1b79cc53498db502941c",
+          "matched_text": "(g) there shall have occurred a Change in Control;"
+        },
+        {
+          "module_id": "CP-3D",
+          "document_sha256": "4018aaa62309df6cd66a9b5fc766c4a9429e886e649023de2bad8673baf8aa51",
+          "matched_text": "Last trade price: $93.28"
+        },
+        {
+          "module_id": "CP-3D",
+          "document_sha256": "256c646128b7b670ebeb2e795aaced255373b488261b7f5c9111f933e2226b24",
+          "matched_text": "Last trade price: $84.94"
+        },
+        {
+          "module_id": "CP-3",
+          "document_sha256": "4018aaa62309df6cd66a9b5fc766c4a9429e886e649023de2bad8673baf8aa51",
+          "matched_text": "Last trade yield: 8.063520%"
+        },
+        {
+          "module_id": "CP-3",
+          "document_sha256": "256c646128b7b670ebeb2e795aaced255373b488261b7f5c9111f933e2226b24",
+          "matched_text": "Last trade yield: 9.318398%"
+        },
+        {
+          "module_id": "CP-5",
+          "document_sha256": "f369ce5f1ebeddd9a0d4ce02ce3958112267d8701d1a348dfd6dc82d2034793a",
+          "matched_text": "Total debt | 11,807 | 11,705 | 11,792"
+        },
+        {
+          "module_id": "CP-6",
+          "document_sha256": "e2490912d9cc688135e15732e0fcf4aafd715e91e4d580edd577483535507bab",
+          "matched_text": "550,000 | Caesars Entertainment, Inc., Sr. Secd. Note, 144A, 6.500%, 2/15/2032 | 536,927"
+        },
+        {
+          "module_id": "CP-6",
+          "document_sha256": "e2490912d9cc688135e15732e0fcf4aafd715e91e4d580edd577483535507bab",
+          "matched_text": "NET ASSETS—100% | $491,554,960"
+        },
+        {
+          "module_id": "CP-6",
+          "document_sha256": "10455d54958421c56b4902f2fa41bfc08873bb9d16ee9fb22ab31ded215846ea",
+          "matched_text": "The Fund will invest at least 80% of its net assets (plus the amount of any borrowings for investment purposes) in sustainable lower-rated fixed-income investments."
+        }
+      ],
+      "expects_ready": [
+        "CP-1",
+        "CP-2",
+        "CP-4",
+        "CP-3D",
+        "CP-3",
+        "CP-5",
+        "CP-6"
+      ],
+      "expects_projection": [
+        {
+          "module_id": "CP-3D",
+          "field": "qa_status",
+          "value": "Restricted"
+        },
+        {
+          "module_id": "CP-3",
+          "field": "qa_status",
+          "value": "Restricted"
+        },
+        {
+          "module_id": "CP-6",
+          "field": "decision_scope",
+          "value": "FULL"
+        },
+        {
+          "module_id": "CP-6",
+          "field": "qa_status",
+          "value": "Restricted"
+        }
+      ]
+    }
+  ]
+}

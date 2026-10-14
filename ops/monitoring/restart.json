@@ -1,0 +1,20 @@
+{
+  "displayName": "caos Cloud Run instance started",
+  "combiner": "OR",
+  "conditions": [
+    {
+      "displayName": "Any instance start for service caos",
+      "conditionThreshold": {
+        "filter": "metric.type=\"run.googleapis.com/container/startup_latencies\" AND resource.type=\"cloud_run_revision\" AND resource.label.service_name=\"caos\"",
+        "aggregations": [
+          {"alignmentPeriod": "60s", "perSeriesAligner": "ALIGN_PERCENTILE_50"}
+        ],
+        "comparison": "COMPARISON_GT",
+        "thresholdValue": 0,
+        "duration": "0s",
+        "trigger": {"count": 1}
+      }
+    }
+  ],
+  "notificationChannels": ["projects/PROJECT_ID/notificationChannels/CHANNEL_ID"]
+}

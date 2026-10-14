@@ -1,0 +1,174 @@
+import { expect, test } from "@playwright/test";
+
+test("the served Directory case opens matching Analysis, Run and Upload views", async ({
+  page,
+}) => {
+  const caseId = "00000000-0000-4000-8000-000000000001";
+  await page.route("**/api/v1/cases/*/events*", (route) => route.abort("connectionfailed"));
+  await page.goto("/directory/");
+  await expect(page.locator("[data-demo-unavailable]")).toHaveCount(3);
+  await page
+    .locator(`tr[data-case='${caseId}']`)
+    .getByRole("link", { name: /Open case/ })
+    .click();
+  await expect(page.locator("[data-analysis]")).toBeVisible();
+  await expect(page.locator("header [data-case]")).toHaveAttribute("data-case", caseId);
+  await page.locator("nav a[data-section='run']").click();
+  await expect(page.locator("[data-run='00000000-0000-4000-8000-0000000000b2']")).toBeVisible();
+  await page.locator("nav a[data-section='upload']").click();
+  await expect(page.getByRole("heading", { name: "Source pack" })).toBeVisible();
+  await expect(page.locator("main#body")).not.toContainText("WIRE_IDENTITY_MISMATCH");
+});
+
+test("the rail is the only navigation and reaches all nine sections", async ({ page }) => {
+  await page.goto("/directory/");
+  const links = page.locator("nav a[data-section]");
+  await expect(links).toHaveCount(9);
+  await links.filter({ hasText: "Committee" }).click();
+  await expect(page).toHaveURL(/\/committee\/$/);
+  await expect(page.locator("nav a[aria-current='page']")).toHaveAttribute(
+    "data-section",
+    "committee",
+  );
+  await expect(page.locator("main#body [data-surface-state='unavailable']")).toHaveCount(1);
+});
+
+test("command-K opens nothing", async ({ page }) => {
+  await page.goto("/analysis/");
+  await page.keyboard.press("ControlOrMeta+KeyK");
+  await expect(page.locator("[role='dialog']")).toHaveCount(0);
+});
+
+test("a pre-v2 slug forwards with its query intact and history replaced", async ({ page }) => {
+  await page.goto("/directory/");
+  // `commit`, not the default `load`: the slug forwards itself as soon as the
+  // document runs, so waiting for the load event of a page that is already
+  // being replaced is a race. WebKit lost it twice under CI load, timing out
+  // in `goto` at 30s. The assertion below polls, so nothing is given up.
+  await page.goto("/deepdive/?case=CASE-2026-CVNA01", { waitUntil: "commit" });
+  await expect(page).toHaveURL(/\/analysis\/\?case=CASE-2026-CVNA01$/);
+  await page.goBack();
+  // The forward replaced history: back lands on the entry before the slug.
+  await expect(page).toHaveURL(/\/directory\/$/);
+});
+
+test("an absent route shares the private-404 wording", async ({ page }) => {
+  await page.goto("/nothing/");
+  await expect(page.locator("main#body")).toContainText("Unavailable or not permitted.");
+  await page.goto("/analysis/?case=CASE-2026-CVNA01&fixture=unavailable");
+  await expect(page.locator("main#body")).toContainText("Unavailable or not permitted.");
+});
+
+test("demo fixture HTTP is read-only before fixture selection", async ({ request }) => {
+  const get = await request.get("/api/v1/directory");
+  expect(get.status()).toBe(200);
+  expect(await get.json()).toHaveProperty("chrome");
+  const run = await request.get("/api/v1/cases/00000000-0000-4000-8000-000000000001/run");
+  expect(run.status()).toBe(200);
+  const model = await request.get("/api/v1/cases/00000000-0000-4000-8000-000000000001/model");
+  expect(model.status()).toBe(200);
+  expect((await model.json()).body.forecast.route_node_id).toBe("CP-CF");
+  // Only supported v1 paths are served.
+  for (const path of ["/api/sections/directory", "/api/v1/cases/CASE-2026-CVNA01/book"]) {
+    expect((await request.get(path)).status(), path).toBe(404);
+  }
+
+  const post = await request.post("/api/v1/directory?fixture=../../directory");
+  expect(post.status()).toBe(405);
+  expect(post.headers()["allow"]).toBe("GET, HEAD");
+  expect(await post.json()).toEqual({
+    code: "READ_ONLY_DEMO",
+    clears: "a real API handles commands",
+  });
+});
+
+test("demo Model, Report, and Committee routes render parsed v1 content", async ({ page }) => {
+  await page.goto("/model/?case=00000000-0000-4000-8000-000000000001");
+  await expect(page.locator("[data-model-v1]")).toBeVisible();
+  await expect(page.locator("[data-model-periods]")).toContainText("123.45");
+  await expect(page.locator("main#body [data-surface-state]")).toHaveCount(0);
+  await page.goto(
+    "/report/?case=00000000-0000-4000-8000-000000000001&run=00000000-0000-4000-8000-0000000000b2&revision=00000000-0000-4000-8000-0000000000c3",
+  );
+  await expect(page.locator("[data-report-v1]")).toBeVisible();
+  await expect(page.locator("[data-report-narrative]")).toContainText("Coverage 2.1x");
+  await page.goto(
+    "/committee/?case=00000000-0000-4000-8000-000000000001&run=00000000-0000-4000-8000-0000000000b2&revision=00000000-0000-4000-8000-0000000000c3",
+  );
+  await expect(page.locator("[data-committee-v1]")).toBeVisible();
+  await expect(page.locator("[data-committee-filing]")).toHaveAttribute("data-state", "filed");
+  // Read only: no field, and the buttons are a narrative figure's chip, which
+  // opens its source page (N59) with its hidden line marked (N27), a saved
+  // artifact's marker chip (D107), which opens its citation's page the same
+  // way, an artifact's view tabs, and a digest's copy chip, which changes
+  // nothing.
+  await expect(page.locator("[data-committee-v1] input")).toHaveCount(0);
+  await expect(
+    page.locator(
+      "[data-committee-v1] button:not([data-figure-chip]):not([data-marker-chip]):not([data-artifact-view-tab]):not([data-digest-copy])",
+    ),
+  ).toHaveCount(0);
+  await page.locator("[data-figure-chip]").click();
+  const drawer = page.locator("[data-evidence-drawer]");
+  await expect(drawer).toContainText("page 7");
+  await expect(drawer.locator("[data-page-line]")).toHaveCount(3);
+  await expect(drawer.locator("[data-page-line][data-hidden='near_background']")).toHaveCount(1);
+  await expect(drawer.locator("[data-hidden-lines]")).toContainText("1 line on this page");
+  // D107: the artifact's [C1] is a chip, reached and pressed from the keyboard;
+  // the drawer shows the whole line, the excerpt marked. [C2] is inert.
+  await page.keyboard.press("Escape");
+  await expect(drawer).toHaveCount(0);
+  const marker = page.getByRole("button", { name: "C1, citation 1: CP-1 source, page 7" });
+  await marker.focus();
+  await page.keyboard.press("Enter");
+  await expect(drawer).toContainText("page 7");
+  await expect(drawer.locator("blockquote.matched mark")).toHaveText("Coverage 2.1x");
+  await expect(page.locator("[data-unverified-marker]")).toContainText("unverified – page 9");
+  // The signed record, every line_text in it, is closed until asked for.
+  await page.keyboard.press("Escape");
+  // The drawer keeps the page inert until focus is back on its opener; only then can the summary take focus.
+  await expect(marker).toBeFocused();
+  const record = page.locator("[data-committee-artifact-record]").first();
+  await expect(record).toBeHidden();
+  await page.locator("[data-artifact-record-disclosure] > summary").first().focus();
+  await page.keyboard.press("Enter");
+  await expect(record).toBeVisible();
+});
+
+test("saved artifacts preserve canonical tables in contained scroll viewers", async ({ page }) => {
+  const routes = [
+    [
+      "/report/?case=00000000-0000-4000-8000-000000000001&run=00000000-0000-4000-8000-0000000000b2&revision=00000000-0000-4000-8000-0000000000c3",
+      ["[data-report-artifact-text]", "[data-report-artifact-record]"],
+    ],
+    [
+      "/committee/?case=00000000-0000-4000-8000-000000000001&run=00000000-0000-4000-8000-0000000000b2&revision=00000000-0000-4000-8000-0000000000c3",
+      ["[data-committee-artifact-text]", "[data-committee-artifact-record]"],
+    ],
+  ] as const;
+  const table = `| Metric | Value |\n| --- | --- |\n| ${"wide-cell ".repeat(80)}| 2.1x |`;
+
+  for (const [route, selectors] of routes) {
+    await page.goto(route);
+    // The artifact reads formatted first (D60); its exact text is a tab away.
+    await page.locator("[data-artifact-view-tab='written']").first().click();
+    // Its signed record is behind a disclosure, closed by default (D107).
+    await page.locator("[data-artifact-record-disclosure] > summary").first().click();
+    for (const selector of selectors) {
+      const viewer = page.locator(selector).first();
+      await viewer.evaluate((element, text) => {
+        element.textContent = text;
+      }, table);
+      await expect(viewer).toHaveText(table);
+      await expect(viewer).toHaveJSProperty("tagName", "PRE");
+      await expect(viewer).toHaveCSS("overflow-x", "auto");
+      await expect(
+        viewer.evaluate((element) => element.scrollWidth > element.clientWidth),
+      ).resolves.toBe(true);
+      await viewer.focus();
+      await expect(viewer).toBeFocused();
+      await page.keyboard.press("ArrowRight");
+      expect(await viewer.evaluate((element) => element.scrollLeft)).toBeGreaterThan(0);
+    }
+  }
+});

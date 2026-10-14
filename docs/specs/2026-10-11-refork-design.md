@@ -1,0 +1,221 @@
+# CAOS on Firebase — re-fork onto current caos-databricks (2026-10-11)
+
+Status: approved in conversation 2026-10-11, pending the owner's review of this file.
+Amends `2026-10-04-firebase-design.md`; where the two differ, this file wins.
+
+## 1. Why
+
+- The fork point is `caos-databricks` 861b218 (2026-10-04). By a2d1efa9 (2026-10-11)
+  upstream `rebuild/databricks` had moved 577 commits (431 files, +93,215 / −23,326),
+  309 of them in the last seven days, and it is still under active development.
+- Phase 1 (13 commits on `phase1`, 950c877) exists only on the owner's laptop; origin
+  holds the skeleton commit 242c6ef.
+- The fork's fresh history (D1) makes every catch-up a manual port.
+
+## 2. Owner decisions (2026-10-11)
+
+1. Re-fork from the upstream tip and replay Phase 1 on it.
+2. Keep upstream's history; `upstream` is a second remote.
+3. Fork plus regular merges: the Databricks code stays in the tree, inert; Phase 2
+   (strip) is dropped while the fork tracks upstream.
+4. Firebase-side work uses the Firebase agent skills and the Firebase MCP server (§5).
+
+## 3. Building `refork`
+
+1. **Backup.** Push `phase1` to origin unchanged.
+2. `git remote add upstream https://github.com/EricMG13/caos-databricks.git`, fetch.
+3. Branch `refork` at the tip of `upstream/rebuild/databricks` at the time this step
+   runs, called **B** below and recorded in FD15. Upstream keeps moving; commits after
+   B arrive with the first sync merge (§6).
+4. `git merge -s ours --allow-unrelated-histories main`: the old history (242c6ef,
+   88ba489) becomes an ancestor and the tree stays B's, so origin `main` later
+   fast-forwards to `refork` with no force-push.
+5. **Carry the fork's docs** from 88ba489: `CLAUDE.md`, `README.md`,
+   `docs/decisions.md`, `docs/specs/2026-10-04-*.md`,
+   `docs/superpowers/plans/2026-10-04-firebase-phase1.md`. Refresh
+   `docs/upstream/CLAUDE.caos-databricks.md` from B's `CLAUDE.md`. `.gitignore` is B's
+   plus the fork's extra lines. `.gitignore.merged` (a stray file) is not carried.
+6. **Replay** `88ba489..phase1` except two commits that keeping the history makes
+   unnecessary: 9929b80 (restored the vendored Databricks skills, which B has) and
+   bc57dbf (D9: re-anchored tests on synthetic commits; the real commits are now in
+   history). Eleven commits remain, plus this spec's commit.
+7. **Conflict rule: upstream wins, the Firebase change is re-applied on top with the
+   smallest footprint.** New behaviour goes in new files where possible.
+   - `caos/models.py` (17 upstream commits in the last week): OpenRouter's `ChatOpenAI`
+     replaces only the `ChatDatabricks` construction in `chat_model`; upstream's
+     Copilot dispatch (`copilot.parsed`) stays as is and inert, because no Copilot model
+     name is configured. Upstream's later behaviour (D117 deadline and lease, D118
+     re-run after a late provider error, the Copilot charge path) is kept.
+   - `caos/pricing.py`, `caos/graph/worker.py`, tests: upstream's version, Firebase
+     change re-applied.
+   - `pyproject.toml`: merged by hand; `uv.lock` regenerated with `uv lock`, never
+     hand-merged.
+
+## 3a. Hardening in the same branch (owner, 2026-10-11)
+
+These come from `docs/research/2026-10-11-firebase-features-review.md` and land on
+`refork` after the replay, each as its own commit.
+
+- **H1, runbook hardening.** Settings and docs only, in `docs/DEPLOY.md` and the deploy
+  flags:
+  - Cloud Run: `--cpu-boost`; an explicit `--concurrency` sized to `STREAM_LIMIT` plus
+    API headroom; an HTTP startup probe on `/api/health`, with no liveness probe.
+  - A dedicated `caos-run` service account, with secret-level `secretAccessor` and
+    bucket-level `objectUser` only.
+  - Secret versions pinned, not `:latest`.
+  - Cloud SQL on the Enterprise edition, dedicated core (`db-custom-1-3840`), with
+    automated backups, point-in-time recovery, `--deletion-protection` and Query
+    Insights, confirmed with `describe`.
+  - An uptime check on `/api/health`, an alerts-only billing budget, and Artifact
+    Registry scanning.
+  - "Deploy while no run is in flight": a deploy restarts the only instance.
+- **H2, shutdown inside Cloud Run's grace.** Cloud Run sends SIGKILL 10 s after SIGTERM;
+  `caos/serve.py` budgets 2 s + 12 s.
+  - Start with a test that fails on today's values. Then change `LIMIT_JOIN_SECONDS`
+    so the whole drain is at most 8 s; that is a one-line change to an upstream file.
+  - If an upstream test pins the old values, update it and record the change in FD20.
+  - No new setting.
+- **H3, user-provisioning script.** `scripts/firebase_users.py`, using
+  `firebase_admin.auth`, replaces DEPLOY.md §7's REST call.
+  - It creates a user with `email_verified=True`, or marks an existing one verified.
+  - It reads the password with `getpass` and never prints or logs it.
+  - It runs on the owner's application-default credentials.
+  - `firebase-admin` goes in a non-runtime dependency group, so it stays out of the
+    image (FD19).
+- **H4, blob writes on the bucket mount: check first, change only if the check fails.**
+  - `put` already rewrites unconditionally and `get` re-hashes, so a damaged blob
+    fails closed and is repaired by the next `put`.
+  - Writing straight to the final name would leave half-written files on local disks,
+    so that change is not made.
+  - Add an on-mount check to the post-deploy runbook: upload a filing, then read it
+    back.
+  - If the temporary file, the rename or the directory `fsync` fails on the mount, the
+    fallback is a Cloud Storage implementation of the existing `volume` protocol in
+    `caos/blobs.py` (whole-object upload). That needs its own FD record and plan.
+
+- **H5, Architecture Center items** (owner, 2026-10-11): A1–A5 and A7 from
+  `docs/research/2026-10-11-architecture-center-review.md` §2.
+  - A1: restore drill and retained backups.
+  - A2: the `service.yaml` procedure.
+  - A3: single-instance alerts.
+  - A4: build provenance, a build service account and digest pins.
+  - A5: secret-access audit logs.
+  - A7: SSL-only Cloud SQL, with connector enforcement if the docs confirm it.
+  - A6, the owner's 2-Step Verification, is the owner's own action.
+
+## 4. Decision log
+
+- The fork's decisions are renamed D1–D14 → FD1–FD14 in `docs/decisions.md` and every
+  fork-owned reference (`CLAUDE.md`, the 2026-10-04 specs and plan, comments and tests
+  in files the fork added or changed), so they no longer collide with upstream's D-numbers
+  in `docs/rebuild/decisions.md`. Commit messages are not rewritten.
+- **FD15** — Re-fork at B with upstream history kept; supersedes FD1's fresh history and
+  retires FD9.
+- **FD16** — OpenRouter is the non-Copilot branch of `chat_model`; Copilot dispatch is
+  kept inert.
+- **FD17** — The fork tracks upstream by merges (§6); the Databricks code stays inert;
+  Phase 2 is dropped.
+- **FD18** — Firebase-side provisioning is declared in `firebase.json` and applied with
+  the Firebase CLI or MCP server (§5).
+- **FD19** — `firebase-admin`, in a non-runtime dependency group, is used only by the
+  owner-run provisioning script (H3). The alternative was the hand-written Identity
+  Toolkit REST call.
+- **FD20** — The shutdown drain fits Cloud Run's 10 s SIGTERM grace (H2).
+
+## 5. Firebase side (skills and MCP)
+
+- **Project.** `caos-firebase-prod` (number 947232046984, display name "CAOS
+  Firebase"), created 2026-10-11 through the MCP `firebase_create_project` at the
+  owner's request. It is the same Google Cloud project that runs Cloud Run, and needs the
+  Blaze plan (the owner links billing).
+- **Committed config.** `.firebaserc` (default alias) and `firebase.json` with
+  `"auth": {"providers": {"emailPassword": true}}`, applied by
+  `npx -y firebase-tools@latest deploy --only auth`. No Google sign-in (FD6).
+- **Web app and its config.** The web app is registered with the MCP tool
+  `firebase_create_app`; its public config comes from `firebase_get_sdk_config` into
+  the `VITE_FIREBASE_*` build args. That config is public by design.
+- **Users.** The owner creates the email/password accounts. No agent enters or handles
+  a password.
+- **Serving stays on Cloud Run through `gcloud`** (FD2). App Hosting is for Node
+  full-stack frameworks (Next.js, Angular) and the backend is Python. Firebase Hosting
+  stays out because of its rewrite timeout.
+- **Checked against the official docs** on 2026-10-11 with the MCP
+  `developerknowledge_search_documents`. The results go into FD18:
+  - **V1, confirmed.** Firebase Hosting is subject to a 60-second request timeout,
+    including rewrites to Cloud Run, and answers 504 past it
+    (`firebase.google.com/docs/hosting/cloud-run`, `/docs/hosting/serverless-overview`).
+    FD2 stands. Cloud Run's own timeout goes up to 3600 s. For anything past 15 minutes,
+    Google advises that clients be able to reconnect; `EventSource` reconnects by itself.
+  - **V2, confirmed.** App Hosting builds Node.js apps only: Next.js and Angular
+    preconfigured, other frameworks through the output-bundle adapter, `nodejs22` and
+    `nodejs24` runtimes (`/docs/app-hosting/frameworks-tooling`). A Python backend is out.
+  - **V3, confirmed.** The checks in `caos/api/firebase_auth.py` match
+    `/docs/auth/admin/verify-id-tokens`: RS256; `kid` among the keys at the securetoken
+    x509 URL; `exp` in the future; `iat` and `auth_time` in the past; `aud` is the
+    project id; `iss` is `https://securetoken.google.com/<id>`; `sub` non-empty; keys
+    cached for the response's `max-age`. The module also bounds `sub` to 128 characters
+    and requires `email_verified`, which is stricter than the docs. Accounts created in
+    the console start unverified, so `docs/DEPLOY.md` §7 verifies them before first use.
+  - **V4, inferred, not stated by the docs.** Authorized domains gate OAuth operations
+    (`auth/unauthorized-domain`) and email action links. Email/password sign-in is
+    neither, so the Cloud Run host should not need adding. To be confirmed on the first
+    deployed sign-in; if refused, add the host in Authentication > Settings.
+
+## 6. Tracking upstream (added to `CLAUDE.md`)
+
+```bash
+git fetch upstream
+git switch -c sync/<yyyy-mm-dd> main
+git merge upstream/rebuild/databricks
+```
+
+Resolve by §3.7's rule, run the full gate list and the container smoke, open a PR to
+`main` from the terminal pane; the owner merges. Cadence is the owner's.
+
+## 7. Done means
+
+- Every gate in `CLAUDE.md` exits 0 on `refork`, with the commands and exit codes in the
+  final report.
+- `scripts/container_smoke.sh` passes.
+- `tests/test_firebase_auth.py`, `tests/test_edge_firebase.py` and the frontend's
+  `auth-gate` and `sign-out` tests pass against B's code.
+- H2's test fails before the change and passes after it. H3's script runs `--help`
+  without credentials, and a test proves it never echoes the password.
+- A PR `refork` → `main` is opened from the terminal pane. It exceeds 800 changed lines
+  because it imports upstream. The review scope is `git diff B..refork`, which must stay
+  near Phase 1's own size.
+
+## 8. Execution
+
+Sub-agent-driven development (global rules). The controller runs steps 3.1–3.6 (git
+only, no code). Conflict resolution and fixes go to sub-agents:
+
+| Work | Implementer | Reviewer |
+|---|---|---|
+| Identity replay (edge, `firebase_auth`, health) | `mx-precise` | `mx-adversary` |
+| Model and pricing replay (money) | `mx-precise` | `mx-adversary` |
+| Frontend sign-in, container, runbook, `firebase.json` | `mx-feature` | `mx-precise` |
+| H1 runbook hardening | `mx-scaffold` | `mx-precise` |
+| H2 shutdown budget (exactly-once path) | `mx-precise` | `mx-adversary` |
+| H3 provisioning script (handles passwords) | `mx-feature` | `mx-adversary` |
+| H5 build and operations hardening | `mx-scaffold` | `mx-adversary` |
+| Whole branch | — | `mx-architect` |
+
+## 9. Out of scope
+
+- Deploying, which needs the owner's sign-ins (`gcloud auth login`, Firebase CLI),
+  Blaze billing and the OpenRouter key in Secret Manager.
+- Phase 2.
+- Google sign-in.
+- Later, separate changes from the research review, each with its own design:
+  - server-minted HttpOnly session cookies;
+  - JSON logs with trace ids;
+  - a TOTP second factor;
+  - the query feature and its `issuer_facts` read model.
+
+## 10. Risks
+
+- `caos/models.py` churns upstream, so most sync merges will conflict there.
+- Upstream may add a boot-time requirement that only Databricks satisfies. The container
+  smoke catches it at each sync.
+- Merging one large sync at a time gets harder the longer the gap between syncs.

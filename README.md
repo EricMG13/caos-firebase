@@ -10,4 +10,5 @@ OpenRouter answers model calls.
 - Decisions: [`docs/decisions.md`](docs/decisions.md)
 - Agent contract: [`CLAUDE.md`](CLAUDE.md)
 
-Status: project skeleton. The application code arrives with the fork.
+Status: re-forked onto `caos-databricks` (FD15); Phase 1 and hardening H1-H5 landed
+2026-10-11. Deploy follows [`docs/DEPLOY.md`](docs/DEPLOY.md).

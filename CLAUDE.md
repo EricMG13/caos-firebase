@@ -13,12 +13,37 @@ The build contract is `docs/specs/2026-10-04-firebase-design.md`; decisions are
 
 ## Status
 
-- **Skeleton only.** The CAOS code arrives as one fresh-history commit when the owner
-  names the fork point in `caos-databricks` (pending; do not copy code before that).
-- **Phase 1 (unplug, for the first demo):** OpenRouter model provider, Firebase identity
-  mode, Dockerfile, Cloud Run deploy. Databricks code stays in the tree, inert.
-- **Phase 2 (strip, after the demo):** delete platform identity, Lakebase, the UC volume
-  backend, the bundle files and the `databricks-*` dependencies, in reviewed steps.
+- **Re-forked** at upstream `rebuild/databricks` d07fea550d33c42ece390aad970d7ca994b9c406
+  with upstream history kept (FD15).
+- **Phase 1 replayed:** OpenRouter model provider (FD8, FD16), Firebase edge mode (FD6,
+  FD10, FD12, FD14), frontend sign-in (FD7, FD13), Dockerfile, `cloudbuild.yaml`,
+  `scripts/container_smoke.sh`, `docs/DEPLOY.md` (FD11). Databricks code stays in the
+  tree, inert. Deploy follows `docs/DEPLOY.md`; the container smoke must pass first.
+- **Hardening H1-H5 landed** (2026-10-11; c274288, d3b8e26, 97599fe, 4ff3067,
+  02181a7): runbook hardening (H1), shutdown inside Cloud Run's grace (H2, FD20),
+  user-provisioning script (H3, FD19), blob-write check on the mount (H4), Architecture
+  Center items A1-A5 and A7 (H5).
+- **Phase 2 is dropped** (FD17): the Databricks code is not deleted, so upstream merges
+  stay clean.
+- **Firebase project:** `caos-firebase-prod`.
+
+## Tracking upstream
+
+```bash
+git fetch upstream
+git switch -c sync/<yyyy-mm-dd> main
+git merge upstream/rebuild/databricks
+```
+
+Rule: upstream's version wins; the Firebase change is re-applied on top with the
+smallest footprint. Run the full gate list and the container smoke, then open a PR to
+`main` from the terminal pane; the owner merges. Merge with a merge commit; never squash
+or rebase (FD22). `size` follows FD21. Cadence is the owner's.
+
+`frontend/package-lock.json` is never hand-merged: take upstream's lock, reinstall the
+fork's `@firebase/app` and `@firebase/auth` pins with `--ignore-scripts`, run
+`npm --prefix frontend audit fix --package-lock-only --ignore-scripts` if audit flags
+anything, then `npm --prefix frontend audit --omit=dev` must exit 0.
 
 ## Repo map (after the fork)
 
@@ -32,14 +57,45 @@ The build contract is `docs/specs/2026-10-04-firebase-design.md`; decisions are
 
 ## Gates (all must exit 0; none may be loosened)
 
-Retained from `caos-databricks`: `ruff check`, `ruff format --check`, `mypy`, `pytest`
-with coverage ≥ 80% against a real Postgres, `check_vocabulary`, `check_tested`,
-`io_budget --assert`, bandit with its floor, `pip-audit --strict`, `gitleaks`,
-`uv lock --check`, `complexipy` ≤ 15 (legacy baselined), `jscpd`, `check_gate_config`
-(suppressions only fall), `check_icm`, `pre-commit`, the frontend's
-`lint|typecheck|test|build|a11y`, `verify_package.py`.
-Dropped with the platform: `databricks bundle *`, `workspace_stub.py`, `shipped_boot.py`,
-`enterprise_deploy.sh`. Added: a container smoke (`docker build` + boot to health OK).
+Upstream's gate list at B, minus the Databricks-only gates (`databricks bundle *`,
+`tests/workspace_stub.py` runs, `tests/shipped_boot.py`, `enterprise_deploy.sh`), plus
+the container smoke:
+
+```bash
+uv sync --locked --all-groups && docker compose up -d --wait
+uv lock --check
+uv run ruff check .
+uv run ruff format --check .
+uv run mypy caos scripts tests
+CAOS_TEST_POSTGRES_URL=postgresql://postgres:local-test-admin-only@127.0.0.1:55437/postgres CAOS_REQUIRE_POSTGRES=1 uv run pytest -n auto -m "not live_provider"
+uv run python scripts/scan_floors.py coverage.xml --cobertura
+CAOS_TEST_POSTGRES_URL=postgresql://postgres:local-test-admin-only@127.0.0.1:55437/postgres CAOS_REQUIRE_POSTGRES=1 uv run pytest --no-cov tests/test_postgres_races.py
+uv run python scripts/check_vocabulary.py
+uv run python scripts/check_tested.py
+uv run python scripts/io_budget.py --assert
+uv run bandit -r caos scripts icm -f json -o bandit.json; uv run python scripts/scan_floors.py bandit.json --no-parse-errors --cover caos scripts icm --unscanned tests
+uv run pip-audit --strict
+gitleaks git --no-banner
+uv run complexipy caos scripts icm --max-complexity-allowed 15
+npx --prefix frontend --no-install jscpd --threshold 3 --min-lines 10 --ignore "**/node_modules/**,**/dist/**,**/dist-demo/**" caos scripts icm frontend/src
+uv run python scripts/check_gate_config.py
+uv run python scripts/check_gate_config.py --against "$B"
+uv run python scripts/check_icm.py
+uv run python scripts/document_register.py
+uv run python -B vendor/deploy-v/verify_package.py
+uv run pre-commit run --all-files
+npm --prefix frontend ci --ignore-scripts
+npm --prefix frontend audit --omit=dev
+npm --prefix frontend run lint && npm --prefix frontend run typecheck && npm --prefix frontend run test && npm --prefix frontend run build && npm --prefix frontend run build:demo && npm --prefix frontend run a11y && npm --prefix frontend run test:workbench
+scripts/container_smoke.sh
+```
+
+CI is upstream's `ci.yml`, unchanged, so syncs never conflict on it. Its `bundle`
+job runs against the workspace stand-in and is not a fork gate. The fork's own
+gates (container smoke, npm audit) run in `.github/workflows/fork.yml`. The `size`
+job follows FD21. `scripts/check_gate_config.py` inspects only `ci.yml`;
+`tests/test_fork_ci.py` checks that every action in fork.yml is pinned to the same
+40-hex SHA as in `ci.yml`, and fork.yml's other settings are checked by review.
 
 ## Invariants (never weaken)
 
@@ -61,7 +117,7 @@ is the strict canonical envelope. 10. The route is resolved once and pinned.
   Firebase web config is public by design and may be committed.
 - Typed refusals only; never `str(exc)` on the wire or in a log; never log document
   text or a token.
-- No new dependency without a `Dn` entry in `docs/decisions.md`.
+- No new dependency without an `FDn` entry in `docs/decisions.md`.
 - Only public or synthetic documents go through this deployment: model calls leave
   for OpenRouter.
 - Merges are the owner's. Push and open PRs from the terminal pane.

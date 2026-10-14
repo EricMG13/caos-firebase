@@ -1,0 +1,3124 @@
+/* The workspace's own components: what the shadcn primitives do not draw --
+   panels, registers, the route, the evidence page, the passport (DESIGN.md).
+   Every colour is a theme token (tokens.css), so light and dark both hold,
+   and every rule sits in the components layer, so a utility on the same
+   element wins. Sizes follow shadcn's scale: 14px body, 13px figures and
+   secondary text, 12px labels; figures are mono and tabular. */
+@layer components {
+  :root {
+    --hairline: color-mix(in oklab, var(--border) 70%, transparent);
+    /* A card's edge and its lift off the canvas (D122): a ring, not a border,
+       so the edge takes no layout. */
+    --ring-card: 0 0 0 1px var(--card-border), var(--card-shadow);
+    /* A well is set into its card: its edge and an inner shadow. */
+    --ring-well: 0 0 0 1px var(--well-border), var(--recessed-shadow);
+  }
+
+  /* ---- layout ---- */
+  .cols {
+    display: grid;
+    gap: 1rem;
+    min-width: 0;
+  }
+  .cols.two {
+    grid-template-columns: minmax(0, 1fr) 300px;
+  }
+  .col {
+    display: flex;
+    flex-direction: column;
+    gap: 1rem;
+    min-width: 0;
+  }
+  @media (max-width: 1080px) {
+    .cols.two {
+      grid-template-columns: minmax(0, 1fr);
+    }
+    .cols > .col.right {
+      grid-column: 1 / -1;
+    }
+  }
+  .run-layout {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) 300px;
+    grid-template-areas: "route detail" "actions detail";
+    align-items: start;
+    gap: 1rem;
+    min-width: 0;
+  }
+  .run-route {
+    grid-area: route;
+  }
+  .run-detail {
+    grid-area: detail;
+  }
+  .run-actions {
+    grid-area: actions;
+    min-width: 0;
+  }
+  .run-focus {
+    display: none;
+  }
+  @media (max-width: 1080px) {
+    .run-layout {
+      grid-template-columns: minmax(0, 1fr);
+      grid-template-areas: "route" "detail" "actions";
+    }
+    .run-focus {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 0.25rem 0.75rem;
+      padding: 0.625rem 1rem;
+      border-bottom: 1px solid var(--hairline);
+      font-size: 0.875rem;
+    }
+  }
+  .lbl {
+    font-size: 0.75rem;
+    font-weight: 500;
+    color: var(--muted-foreground);
+  }
+
+  /* ---- panels: a shadcn card ---- */
+  .pnl {
+    display: flex;
+    flex-direction: column;
+    min-width: 0;
+    overflow: hidden;
+    border-radius: var(--radius-xl);
+    background: var(--card);
+    color: var(--card-foreground);
+    box-shadow: var(--ring-card);
+  }
+  .pnl > header {
+    display: flex;
+    flex: none;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 0.25rem 0.5rem;
+    min-height: 2.75rem;
+    padding: 0.5rem 1rem;
+    border-bottom: 1px solid var(--border);
+    background: var(--card-header);
+  }
+  .pnl > header h2,
+  .pnl > header h3 {
+    margin: 0;
+    font-size: 0.875rem;
+    font-weight: 600;
+    letter-spacing: -0.01em;
+  }
+  .pnl > header .cp {
+    font-size: 0.75rem;
+    color: var(--muted-foreground);
+  }
+  .pnl > header .right {
+    display: flex;
+    align-items: center;
+    gap: 0.5rem;
+    margin-left: auto;
+  }
+  .pnl > .pb {
+    padding: 1rem;
+  }
+  .pnl > .pb.flush {
+    padding: 0;
+  }
+  .pnl > .pb.scroll {
+    overflow: auto;
+    min-height: 0;
+  }
+  .pnl.ok {
+    box-shadow:
+      0 0 0 1px color-mix(in oklab, var(--success) 40%, transparent),
+      var(--card-shadow);
+  }
+  .pnl.warn {
+    box-shadow:
+      0 0 0 1px color-mix(in oklab, var(--warning) 45%, transparent),
+      var(--card-shadow);
+  }
+  .pnl.crit {
+    box-shadow:
+      0 0 0 1px color-mix(in oklab, var(--destructive) 45%, transparent),
+      var(--card-shadow);
+  }
+  .pnl.warn > header {
+    background: color-mix(in oklab, var(--warning) var(--tint), transparent);
+  }
+  .pnl.crit > header {
+    background: color-mix(in oklab, var(--destructive) var(--tint), transparent);
+  }
+  /* A panel's body reads top to bottom with one rhythm. */
+  .pb:not(.flush) > * + * {
+    margin-top: 0.75rem;
+  }
+  /* A panel of fields lays them out in columns, label above field, and puts
+     its act, the act's reason and its outcome on their own rows below. */
+  .pb:has(> label.fld + label.fld) {
+    display: grid;
+    grid-template-columns: repeat(auto-fill, minmax(14rem, 1fr));
+    align-items: end;
+    gap: 0.75rem 1rem;
+  }
+  .pb:has(> label.fld + label.fld) > * {
+    margin-top: 0;
+  }
+  .pb:has(> label.fld + label.fld) > :not(label.fld) {
+    grid-column: 1 / -1;
+    justify-self: start;
+  }
+  /* Four fields are two pairs at any width that holds two, never three and a
+     stray fourth (brief 6.10); the slack keeps rounding from dropping to one. */
+  .pb:has(> label.fld:nth-of-type(4)):not(:has(> label.fld:nth-of-type(5))) {
+    grid-template-columns: repeat(auto-fill, minmax(max(14rem, calc(50% - 0.5625rem)), 1fr));
+  }
+  /* A label sits 8px over its field, on the 4px rhythm. */
+  label.fld {
+    display: grid;
+    gap: 0.5rem;
+    font-size: 0.8125rem;
+    font-weight: 500;
+    color: var(--foreground);
+  }
+  div.fld {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 0.5rem;
+  }
+  /* A draft and the row that puts figures into it, as one control (brief
+     6.10): one edge, the draft's focus ring on the whole, the picker a foot
+     under a hairline with its own controls' rings. */
+  /* A field's rule, as a caption under its label (brief 5, Report): 4px
+     under the label, 8px over the field, as a label alone sits over it. */
+  .fld-hint {
+    font-size: 0.75rem;
+    line-height: 1.5;
+    color: var(--muted-foreground);
+  }
+  .pb:not(.flush) > label.fld + .fld-hint {
+    margin-top: 0.25rem;
+  }
+  .pb:not(.flush) > label.fld + .composer,
+  .pb:not(.flush) > .fld-hint + .composer {
+    margin-top: 0.5rem;
+  }
+  /* A card's caption at its foot: what the card's figures are, said once,
+     under a hairline and in the caption's size. */
+  .card-note {
+    padding-top: 0.75rem;
+    border-top: 1px solid var(--hairline);
+    font-size: 0.75rem;
+    line-height: 1.5;
+    color: var(--muted-foreground);
+  }
+  .calc-caveat {
+    padding: 0.625rem 1rem;
+    border: 1px solid var(--border);
+    border-radius: var(--radius-xl);
+    background: color-mix(in oklab, var(--muted) 40%, transparent);
+  }
+  .calc-caveat > .note {
+    margin: 0;
+  }
+  .calc-caveat > * + * {
+    margin-top: 0.5rem;
+  }
+  .composer {
+    border: 1px solid var(--input);
+    border-radius: var(--radius-lg);
+    background: var(--field-bg);
+    box-shadow: var(--recessed-shadow);
+    transition:
+      border-color 150ms var(--ease-out),
+      box-shadow 150ms var(--ease-out);
+  }
+  .composer:has(textarea:focus-visible) {
+    border-color: var(--ring);
+    box-shadow: 0 0 0 3px color-mix(in oklab, var(--ring) 45%, transparent);
+  }
+  .composer > [data-figure-picker] {
+    margin: 0;
+    padding: 0.5rem 0.625rem;
+    border-top: 1px solid var(--border);
+  }
+  /* Save, sign, freeze, file as the sequence it is (brief 6.11): each step
+     under a rule that is the success hue once done and primary while current,
+     its control beneath, the current one the section's one primary. */
+  .filing-steps {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(min(12rem, 100%), 1fr));
+    gap: 1rem;
+    margin: 0.25rem 0 0;
+    padding: 0;
+    list-style: none;
+  }
+  .filing-step {
+    display: flex;
+    flex-direction: column;
+    align-items: flex-start;
+    gap: 0.5rem;
+    padding-top: 0.75rem;
+    border-top: 2px solid var(--border);
+  }
+  .filing-step[data-step-state="done"] {
+    border-top-color: var(--success);
+  }
+  .filing-step[data-step-state="current"] {
+    border-top-color: var(--primary);
+  }
+  .filing-step-head {
+    display: flex;
+    align-items: center;
+    gap: 0.5rem;
+    font-size: 0.875rem;
+    font-weight: 600;
+    color: var(--foreground);
+  }
+  .filing-step-n {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    width: 1.25rem;
+    height: 1.25rem;
+    border: 1px solid var(--border);
+    border-radius: 999px;
+    font: 500 0.6875rem var(--font-mono);
+    color: var(--muted-foreground);
+  }
+  .filing-step[data-step-state="current"] .filing-step-n {
+    border-color: var(--primary);
+    background: var(--primary);
+    color: var(--primary-foreground);
+  }
+  .filing-step[data-step-state="done"] .filing-step-n {
+    border-color: var(--success);
+    color: var(--success);
+  }
+  .filing-step-n svg {
+    width: 0.75rem;
+    height: 0.75rem;
+  }
+  .filing-step-done {
+    font-size: 0.75rem;
+    font-weight: 500;
+    color: var(--success);
+  }
+  pre.preview {
+    max-height: 20rem;
+    margin: 0;
+    padding: 0.75rem 1rem;
+    overflow: auto;
+    border-radius: var(--radius-lg);
+    background: var(--muted);
+    font: 400 0.8125rem/1.6 var(--font-mono);
+    white-space: pre-wrap;
+    overflow-wrap: anywhere;
+  }
+  .pb.flush > .note {
+    padding: 0.75rem 1rem;
+  }
+  /* A source fact: its page chip and file on one line, the quote under them
+     at full width. A file name is one word, so it may break inside itself --
+     `break-word`, which never shrinks the column the way `anywhere` does. */
+  .ev.fact {
+    display: flex;
+    flex-direction: column;
+    gap: 0.5rem;
+  }
+  .ev.fact .h {
+    min-width: 0;
+    overflow-wrap: break-word;
+  }
+  .pb .actions {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 0.5rem;
+    margin-top: 0.75rem;
+  }
+  /* A wide table scrolls inside its panel; the page never scrolls sideways.
+     `contain: paint` is what makes the second half true: a table's intrinsic
+     width still widens the document's own scroll range through an ordinary
+     overflow container (WCAG 1.4.10, finding FE-5). */
+  .tscroll {
+    overflow-x: auto;
+    min-width: 0;
+    contain: paint;
+  }
+  /* A table wider than its card fades at the edge it continues past, driven by
+     its own scroll; a table that fits has no scroll range and no fade. */
+  @supports (animation-timeline: scroll()) {
+    .tscroll {
+      mask-image: linear-gradient(
+        to right,
+        #000 0,
+        #000 calc(100% - var(--tscroll-fade)),
+        transparent 100%
+      );
+      animation: tscroll-fade linear both;
+      animation-timeline: scroll(self inline);
+    }
+  }
+  /* A register wider than its card keeps each row's name in view as it
+     scrolls (brief 6.5): its first column holds at the left, on the card's
+     own ground so nothing shows through it. Not on a narrow screen, where a
+     held column would leave the rest too little room to scroll into. */
+  @media (min-width: 48rem) {
+    .tscroll > table.pin-first > * > tr > :first-child {
+      position: sticky;
+      left: 0;
+      z-index: 1;
+      background: var(--card);
+      box-shadow: inset -1px 0 0 var(--hairline);
+    }
+    .tscroll > table.pin-first > thead > tr > :first-child {
+      background: var(--table-head);
+    }
+    .tscroll > table.pin-first > tbody > tr:hover > :first-child {
+      background: var(--table-hover);
+    }
+    .tscroll > table.pin-first > tbody > tr.on > :first-child {
+      background: var(--selected);
+    }
+  }
+  /* Report's saved artifact is a keyboard-focusable scroll region (WCAG 2.5.8);
+     its content is one text line, so nothing else gives it a 24px target. */
+  .artifact-scroll {
+    min-height: 24px;
+  }
+  .plain,
+  ul.pillrow,
+  ul.attlist {
+    margin: 0;
+    padding: 0;
+    list-style: none;
+  }
+
+  /* Host facts keep the served status word beside its semantic colour. */
+  .modfacts .fact-item {
+    display: inline-flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 0.375rem;
+    min-width: 0;
+  }
+  .modfacts .fact-icon {
+    width: 0.875rem;
+    height: 0.875rem;
+    flex: none;
+    stroke-width: 2;
+  }
+  .modfacts .fact-signal {
+    --fact-color: var(--foreground);
+    color: var(--fact-color);
+  }
+  /* The bundle's whole vocabularies (CANON_SHARED.md), exactly as its
+     validator admits them (validate_handoff.py refuses any other spelling):
+     "Insufficient Information" is worse than "Low" and than "Requires More
+     Work", so it is red, not neutral. */
+  .modfacts .fact-signal[data-status="Committee Ready"],
+  .modfacts .fact-signal[data-band="high"],
+  .modfacts .fact-signal[data-count="0"] {
+    --fact-color: var(--success);
+  }
+  .modfacts .fact-signal[data-status="Draft Only"],
+  .modfacts .fact-signal[data-status="Restricted"],
+  .modfacts .fact-signal[data-status="Requires More Work"],
+  .modfacts .fact-signal[data-band="medium"],
+  .modfacts .fact-signal[data-count]:not([data-count="0"]) {
+    --fact-color: var(--warning);
+  }
+  .modfacts .fact-signal[data-status="Blocked"],
+  .modfacts .fact-signal[data-status="Insufficient Information"],
+  .modfacts .fact-signal[data-band="low"],
+  .modfacts .fact-signal[data-band="insufficient information"] {
+    --fact-color: var(--destructive);
+  }
+  .modfacts .fact-signal b,
+  .modfacts .fact-signal .mono {
+    color: inherit;
+  }
+  .modfacts .fact-scope[data-scope="SCREENING_ONLY"] {
+    color: var(--warning);
+  }
+  .modfacts .fact-chip {
+    display: inline-flex;
+    align-items: center;
+    gap: 0.3rem;
+    padding: 0.125rem 0.5rem;
+    border-radius: 999px;
+    font-size: 0.75rem;
+    font-weight: 500;
+    line-height: 1.25rem;
+  }
+
+  /* ---- a status tag: a shadcn badge ---- */
+  .tag {
+    display: inline-flex;
+    align-items: center;
+    gap: 0.25rem;
+    height: 1.25rem;
+    padding: 0 0.5rem;
+    border: 1px solid var(--border);
+    border-radius: 999px;
+    font-size: 0.75rem;
+    font-weight: 500;
+    font-variant-numeric: tabular-nums;
+    white-space: nowrap;
+    color: var(--foreground);
+  }
+  .tag.ok {
+    border-color: transparent;
+    color: var(--success);
+    background: var(--success-tint);
+  }
+  .tag.warn {
+    border-color: transparent;
+    color: var(--warning);
+    background: var(--warning-tint);
+  }
+  .tag.crit {
+    border-color: transparent;
+    color: var(--destructive);
+    background: var(--destructive-tint);
+  }
+  .tag.acc {
+    border-color: transparent;
+    color: var(--info);
+    background: var(--info-tint);
+  }
+
+  /* ---- severity: disc, triangle, rounded square, flat dot (DESIGN.md) ---- */
+  .glyph {
+    display: inline-block;
+    flex: none;
+    width: 0.5rem;
+    height: 0.5rem;
+  }
+  .glyph.ok {
+    border-radius: 50%;
+    background: var(--success);
+  }
+  .glyph.run {
+    border-radius: 50%;
+    background: var(--info);
+  }
+  .glyph.warn {
+    width: 0;
+    height: 0;
+    border-right: 0.3125rem solid transparent;
+    border-bottom: 0.5rem solid var(--warning);
+    border-left: 0.3125rem solid transparent;
+  }
+  .glyph.crit {
+    border-radius: 2px;
+    background: var(--destructive);
+  }
+  .glyph.restricted {
+    border-radius: 50%;
+    box-shadow: inset 0 0 0 2px var(--success);
+  }
+  .glyph.idle {
+    width: 0.625rem;
+    height: 0.1875rem;
+    border-radius: 1px;
+    background: var(--idle);
+  }
+
+  /* ---- a citation chip: a pill that opens its evidence ---- */
+  .chip {
+    display: inline-flex;
+    align-items: center;
+    gap: 0.25rem;
+    height: 1.5rem;
+    padding: 0 0.5rem;
+    border: 1px solid color-mix(in oklab, var(--info) 30%, transparent);
+    border-radius: 999px;
+    background: var(--info-tint);
+    color: var(--info);
+    font: 500 0.75rem/1 var(--font-mono);
+    white-space: nowrap;
+    cursor: pointer;
+    transition:
+      background-color 150ms var(--ease-out),
+      scale 150ms var(--ease-out);
+  }
+  .chip:hover {
+    background: color-mix(in oklab, var(--info) 20%, transparent);
+  }
+  .chip:active {
+    scale: 0.97;
+  }
+  .chip.linked,
+  .chip[aria-expanded="true"] {
+    box-shadow: 0 0 0 2px var(--ring);
+  }
+  /* A citation of a withdrawn source: struck through and dashed, so the mark
+     is shape as well as hue. */
+  .chip.withdrawn {
+    border-style: dashed;
+    border-color: color-mix(in oklab, var(--warning) 55%, transparent);
+    background: transparent;
+    color: var(--warning);
+    text-decoration: line-through;
+  }
+
+  /* ---- tables: shadcn's table ---- */
+  table.cases,
+  table.reg,
+  table.tbl,
+  table.dense {
+    width: 100%;
+    border-collapse: collapse;
+    font-size: 0.875rem;
+  }
+  table.cases th,
+  table.reg th,
+  table.tbl th,
+  table.dense th {
+    height: 2.5rem;
+    padding: 0 0.75rem;
+    border-bottom: 1px solid var(--border);
+    background: var(--table-head);
+    font-size: 0.75rem;
+    font-weight: 500;
+    color: var(--muted-foreground);
+    text-align: right;
+    white-space: nowrap;
+  }
+  table.cases th:first-child,
+  table.tbl th:first-child,
+  table.dense th:first-child,
+  table.cases th.l,
+  table.tbl th.l,
+  table.dense th.l,
+  table.reg th {
+    text-align: left;
+  }
+  table.reg th.r {
+    text-align: right;
+  }
+  /* Numeric truth (DESIGN.md): every figure column is mono, tabular and right
+     aligned, so decimals line up down a column. */
+  table.cases td,
+  table.tbl td,
+  table.dense td {
+    padding: 0.5rem 0.75rem;
+    border-bottom: 1px solid var(--hairline);
+    font: 400 0.8125rem var(--font-mono);
+    font-variant-numeric: tabular-nums;
+    text-align: right;
+    white-space: nowrap;
+  }
+  table.cases td.l,
+  table.tbl td.l,
+  table.dense td.l {
+    font: 400 0.875rem var(--font-sans);
+    color: var(--foreground);
+    text-align: left;
+  }
+  table.cases tbody tr,
+  table.reg tbody tr,
+  table.tbl tbody tr,
+  table.dense tbody tr {
+    transition: background-color 150ms var(--ease-out);
+  }
+  table.cases tbody tr:hover,
+  table.reg tbody tr:hover,
+  table.tbl tbody tr:hover,
+  table.dense tbody tr:hover {
+    background: var(--table-hover);
+  }
+  /* A label cell may wrap; the numbers never do. */
+  table.cases td.wrap {
+    min-width: 150px;
+    line-height: 1.4;
+    white-space: normal;
+  }
+  table.cases tr.grp td {
+    background: var(--muted);
+    font: 500 0.75rem var(--font-sans);
+    color: var(--muted-foreground);
+    text-align: left;
+  }
+  table.reg td {
+    padding: 0.625rem 0.75rem;
+    border-bottom: 1px solid var(--hairline);
+    color: var(--foreground);
+    white-space: nowrap;
+  }
+  table.reg tr:last-child td {
+    border-bottom: 0;
+  }
+  table.reg td.m {
+    font: 400 0.8125rem var(--font-mono);
+    font-variant-numeric: tabular-nums;
+    color: var(--muted-foreground);
+  }
+  table.reg td.r {
+    text-align: right;
+  }
+  /* The selected row: its fill and a 1px ring drawn on its cells, top and
+     bottom on each, the sides on the first and last (D122). */
+  table.reg tr.on td {
+    background: var(--selected);
+    box-shadow:
+      inset 0 1px 0 var(--selected-border),
+      inset 0 -1px 0 var(--selected-border);
+  }
+  table.reg tr.on td:first-child {
+    box-shadow:
+      inset 1px 0 0 var(--selected-border),
+      inset 0 1px 0 var(--selected-border),
+      inset 0 -1px 0 var(--selected-border);
+  }
+  table.reg tr.on td:last-child {
+    box-shadow:
+      inset -1px 0 0 var(--selected-border),
+      inset 0 1px 0 var(--selected-border),
+      inset 0 -1px 0 var(--selected-border);
+  }
+  table.reg tr.wd td {
+    color: var(--muted-foreground);
+  }
+  /* A register cell that may wrap -- issuer and sector in Directory, the source
+     and withdrawal cells in Upload -- so nine columns fit at 1280. */
+  table.reg td.wrap,
+  table.reg th.wrap {
+    overflow-wrap: break-word;
+    white-space: normal;
+  }
+  /* A timestamp in a wrapping cell stays one token. */
+  table.reg td[data-withdrawal] time {
+    white-space: nowrap;
+  }
+  /* Nine columns plus the action: the register trims its gutters so it fits at 1024. */
+  table.reg[data-register] th,
+  table.reg[data-register] td {
+    padding-right: 0.5rem;
+    padding-left: 0.5rem;
+  }
+  /* Directory pins its first column: an unbroken title must not make that
+     sticky cell cover the action after horizontal scrolling. */
+  table.reg[data-register] .register-title {
+    display: block;
+    width: 14rem;
+    overflow-wrap: anywhere;
+  }
+  /* A file name is one word; it may break anywhere so the row need not widen. */
+  table.reg td .sub {
+    display: block;
+    margin-top: 0.125rem;
+    font: 400 0.75rem var(--font-mono);
+    color: var(--muted-foreground);
+    overflow-wrap: anywhere;
+  }
+  /* A case's latest run on one line: its state, its route, its set. */
+  table.reg td .latest-run {
+    display: inline-flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 0.25rem 0.375rem;
+  }
+  table.reg td .latest-run .sub {
+    display: inline;
+    margin-top: 0;
+  }
+  /* The state cell is shape and word, never hue alone. */
+  table.reg td .state,
+  .revstate {
+    display: inline-flex;
+    align-items: center;
+    gap: 0.375rem;
+  }
+  table.tbl.revisions td.acts > * + * {
+    margin-left: 0.75rem;
+  }
+  .cellbtn {
+    all: unset;
+    display: block;
+    width: 100%;
+    color: inherit;
+    font: inherit;
+    text-align: inherit;
+    cursor: pointer;
+  }
+  .cellbtn:focus-visible {
+    outline: 2px solid var(--ring);
+    outline-offset: -2px;
+  }
+  /* A figure cell's button fills its cell: a 24px target (WCAG 2.5.8). */
+  table.tbl td .cellbtn {
+    display: flex;
+    align-items: center;
+    min-height: 24px;
+  }
+  table.tbl td.num .cellbtn {
+    justify-content: flex-end;
+    width: 100%;
+  }
+  .stale {
+    color: var(--warning);
+  }
+
+  /* ---- rows, lists, notes ---- */
+  .ev,
+  .driver {
+    display: grid;
+    grid-template-columns: 1fr auto;
+    gap: 0.125rem 0.75rem;
+    padding: 0.625rem 1rem;
+    border-bottom: 1px solid var(--hairline);
+  }
+  .ev:last-child {
+    border-bottom: 0;
+  }
+  .ev .h,
+  .driver .h {
+    font-size: 0.875rem;
+    color: var(--foreground);
+  }
+  .ev .m,
+  .driver .m {
+    grid-column: 1;
+    font: 400 0.75rem var(--font-mono);
+    color: var(--muted-foreground);
+  }
+  .kv {
+    display: grid;
+    grid-template-columns: auto 1fr;
+    /* A label sits on its value's line, a copy chip's included. */
+    align-items: baseline;
+    gap: 0.375rem 1rem;
+    margin: 0;
+    font-size: 0.875rem;
+  }
+  /* A label keeps to one line while its value fits beside it, and breaks
+     between its words only when the value needs the room: "Validation
+     warnings" beside a digest chip at 320px. */
+  .kv dt {
+    color: var(--muted-foreground);
+  }
+  .kv dd {
+    margin: 0;
+    font: 400 0.8125rem var(--font-mono);
+    color: var(--foreground);
+    text-align: right;
+  }
+  /* Prose wraps between words; only an unbroken token (a digest) breaks anywhere. */
+  .kv dd.wrap {
+    overflow-wrap: anywhere;
+    white-space: normal;
+  }
+  /* A value that is words, not a figure, reads in the body face. */
+  .kv dd.wrap,
+  .kv dd.prose {
+    font: 400 0.875rem var(--font-sans);
+  }
+  [data-node-detail] .kv .node-reason-label,
+  [data-node-detail] .kv .node-reason {
+    grid-column: 1 / -1;
+  }
+  [data-node-detail] .kv .node-reason {
+    text-align: left;
+  }
+  /* An id or digest (ds/Digest.tsx): short, mono, one press to copy. */
+  /* In a narrow value column the prefix, the digest and the control each take
+     a line of their own rather than running past the card (320px reflow). */
+  .digest {
+    display: inline-flex;
+    flex-wrap: wrap;
+    align-items: center;
+    justify-content: flex-end;
+    gap: 0.25rem;
+    font: 400 0.8125rem var(--font-mono);
+    font-variant-numeric: tabular-nums;
+  }
+  .digest-copy {
+    display: inline-flex;
+    flex-wrap: wrap;
+    align-items: center;
+    justify-content: flex-end;
+    gap: 0.25rem;
+    min-height: 1.5rem;
+    padding: 0 0.375rem;
+    margin-right: -0.375rem;
+    border-radius: var(--radius-sm);
+    font: inherit;
+    color: var(--foreground);
+    text-align: inherit;
+    transition: background-color 150ms var(--ease-out);
+  }
+  .digest-copy:hover {
+    background: var(--accent);
+  }
+  .digest-copy svg {
+    width: 0.8125rem;
+    height: 0.8125rem;
+    color: var(--muted-foreground);
+  }
+  /* A table row keeps its digest and control on one line; the table
+     scrolls rather than the row doubling its height. */
+  :is(td, th) .digest,
+  :is(td, th) .digest-copy {
+    flex-wrap: nowrap;
+  }
+  /* In a left-aligned cell the chip hangs into the left gutter instead, so
+     its digest lines up with the words above it. */
+  .l .digest {
+    justify-content: flex-start;
+  }
+  .l .digest-copy {
+    margin-right: 0;
+    margin-left: -0.375rem;
+  }
+  .digest-said {
+    font: 400 0.75rem var(--font-sans);
+    color: var(--success);
+  }
+  .note {
+    font-size: 0.875rem;
+    line-height: 1.55;
+    color: var(--muted-foreground);
+  }
+  .note b {
+    font-weight: 600;
+    color: var(--foreground);
+  }
+  /* A step that asks once more before an act that cannot be undone. */
+  .note.warn {
+    padding: 0.75rem 1rem;
+    border: 1px solid color-mix(in oklab, var(--warning) 40%, transparent);
+    border-radius: var(--radius-lg);
+    background: color-mix(in oklab, var(--warning) var(--tint), transparent);
+    color: var(--foreground);
+  }
+  .fopt {
+    display: flex;
+    align-items: center;
+    gap: 0.5rem;
+    padding: 0.125rem 0;
+    font-size: 0.875rem;
+    color: var(--foreground);
+  }
+  label.fopt {
+    min-height: 24px;
+    cursor: pointer;
+  }
+  .fopt input[type="checkbox"] {
+    flex: none;
+    width: 1rem;
+    height: 1rem;
+    margin: 0;
+    accent-color: var(--primary);
+  }
+  .pillrow {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 0.375rem;
+  }
+  .pill {
+    display: inline-flex;
+    align-items: center;
+    height: 1.25rem;
+    padding: 0 0.5rem;
+    border: 1px solid var(--border);
+    border-radius: 999px;
+    font: 500 0.75rem var(--font-mono);
+    color: var(--foreground);
+  }
+  ul.members {
+    margin: 0.25rem 0 0.5rem;
+    padding: 0;
+    list-style: none;
+  }
+  ul.members li {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 0.5rem 0.75rem;
+    padding: 0.375rem 0;
+    border-bottom: 1px solid var(--hairline);
+    font-size: 0.875rem;
+  }
+  ul.members .m {
+    font: 400 0.8125rem var(--font-mono);
+    color: var(--muted-foreground);
+  }
+  /* A membership pill is a marker, not a toggle. */
+  li.pill {
+    cursor: default;
+  }
+  button.pill {
+    height: 1.75rem;
+    padding: 0 0.625rem;
+    border-radius: var(--radius-md);
+    background: transparent;
+    cursor: pointer;
+    transition:
+      background-color 150ms var(--ease-out),
+      scale 150ms var(--ease-out);
+  }
+  button.pill:hover {
+    background: var(--muted);
+  }
+  button.pill:active {
+    scale: 0.97;
+  }
+  .pill.on,
+  .pill[aria-pressed="true"] {
+    border-color: transparent;
+    background: var(--primary);
+    color: var(--primary-foreground);
+    box-shadow: var(--primary-shadow);
+  }
+  .reslink {
+    display: flex;
+    align-items: flex-start;
+    gap: 0.5rem;
+    padding: 0.5rem 0;
+    border-bottom: 1px solid var(--hairline);
+    font-size: 0.875rem;
+    line-height: 1.4;
+  }
+  .reslink:last-child {
+    border-bottom: 0;
+  }
+  .reslink .t {
+    color: var(--info);
+  }
+  .reslink .m {
+    margin-top: 0.125rem;
+    font: 400 0.75rem var(--font-mono);
+    color: var(--muted-foreground);
+  }
+  .absent {
+    padding: 0.75rem 1rem;
+    border-top: 1px dashed var(--border);
+    font-size: 0.8125rem;
+    line-height: 1.5;
+    color: var(--muted-foreground);
+  }
+  .absent b {
+    font-weight: 600;
+    color: var(--foreground);
+  }
+  /* Refused, never hidden -- and never alarming: quiet, dashed, the plain
+     sentence first and the code after it for whoever needs to quote it. */
+  .refusal {
+    margin-top: 0.5rem;
+    padding: 0.5rem 0.75rem;
+    border: 1px dashed var(--input);
+    border-radius: var(--radius-lg);
+    font-size: 0.875rem;
+  }
+  .refusal code {
+    font: 400 0.75rem var(--font-mono);
+    color: var(--muted-foreground);
+  }
+  .refusal .cl {
+    color: var(--foreground);
+    line-height: 1.5;
+  }
+  .refusal .cl b {
+    font-weight: 600;
+    color: var(--info);
+  }
+  /* A refusal that answers a command the reader just sent is an outcome, not a
+     resting state: its note keeps the critical tone. */
+  .note.crit .refusal {
+    border-color: color-mix(in oklab, var(--destructive) 45%, transparent);
+  }
+  .receipt {
+    margin-top: 0.5rem;
+    padding: 0.5rem 0.75rem;
+    border-radius: var(--radius-md);
+    background: var(--muted);
+    font: 400 0.75rem/1.7 var(--font-mono);
+    color: var(--foreground);
+    overflow-wrap: anywhere;
+  }
+  .receipt .k {
+    color: var(--muted-foreground);
+  }
+  .setrow {
+    display: grid;
+    grid-template-columns: 1fr auto;
+    align-items: center;
+    gap: 0.125rem 0.75rem;
+    padding: 0.625rem 1rem;
+    border-bottom: 1px solid var(--hairline);
+  }
+  .setrow:last-child {
+    border-bottom: 0;
+  }
+  .setrow.on {
+    background: var(--selected);
+    box-shadow: inset 0 0 0 1px var(--selected-border);
+  }
+  .setrow .nm {
+    font: 600 0.8125rem var(--font-mono);
+    color: var(--foreground);
+  }
+  .setrow .mt {
+    grid-column: 1;
+    font: 400 0.75rem var(--font-mono);
+    color: var(--muted-foreground);
+  }
+  .att {
+    display: grid;
+    grid-template-columns: auto 1fr auto;
+    gap: 0.125rem 0.75rem;
+    padding: 0.5rem 1rem;
+    border-bottom: 1px solid var(--hairline);
+    font-size: 0.875rem;
+    color: var(--muted-foreground);
+  }
+  .att time {
+    font: 400 0.8125rem var(--font-mono);
+    font-variant-numeric: tabular-nums;
+    white-space: nowrap;
+  }
+  .att .a {
+    color: var(--foreground);
+  }
+  .att.sel {
+    background: var(--selected);
+    box-shadow: inset 0 0 0 1px var(--selected-border);
+  }
+  /* An attempt in the narrow right column: its number and verdict on one
+     line, when it started on the next, never broken inside the timestamp. */
+  .att.attempt {
+    grid-template-columns: 1fr auto;
+  }
+  .att.attempt > :nth-child(2) {
+    grid-row: 2;
+    grid-column: 1 / -1;
+    white-space: nowrap;
+  }
+  a.att {
+    align-items: center;
+    min-height: 24px;
+  }
+  .att .t-ok {
+    color: var(--success);
+  }
+  .att .t-run {
+    color: var(--info);
+  }
+  .att .t-crit {
+    color: var(--destructive);
+  }
+  /* An admitted file's name is one word; it wraps rather than leaving the column. */
+  .attlist .att {
+    grid-template-columns: minmax(0, 1fr) auto auto;
+  }
+  .attlist .att .a {
+    overflow-wrap: anywhere;
+  }
+
+  /* ---- the passport ---- */
+  .ppfull {
+    display: grid;
+    /* `minmax(0, …)`: a bare 1fr is at least its longest word, and a 64-digit
+       snapshot digest pushed the column past the dialog's edge. */
+    grid-template-columns: 128px minmax(0, 1fr);
+    margin: 0;
+  }
+  .ppfull dt {
+    padding: 0.5rem 1rem;
+    border-right: 1px solid var(--hairline);
+    border-bottom: 1px solid var(--hairline);
+    font-size: 0.75rem;
+    font-weight: 500;
+    color: var(--muted-foreground);
+  }
+  .ppfull dd {
+    margin: 0;
+    padding: 0.5rem 1rem;
+    border-bottom: 1px solid var(--hairline);
+    font-size: 0.875rem;
+    line-height: 1.5;
+    color: var(--foreground);
+  }
+  .ppfull dd code {
+    font: 400 0.8125rem var(--font-mono);
+    /* A digest or a derivation is one long word: it breaks rather than
+       leaving the dialog. */
+    overflow-wrap: anywhere;
+  }
+  .ppfull dd .dev {
+    color: var(--warning);
+  }
+  .ppval {
+    display: flex;
+    align-items: baseline;
+    gap: 0.75rem;
+    padding: 1rem;
+    border-bottom: 1px solid var(--border);
+    background: color-mix(in oklab, var(--muted) 50%, transparent);
+  }
+  .ppval .v {
+    font: 600 1.75rem var(--font-mono);
+    font-variant-numeric: tabular-nums;
+    letter-spacing: -0.02em;
+    color: var(--foreground);
+  }
+  .ppval .u {
+    font: 400 0.8125rem var(--font-mono);
+    color: var(--muted-foreground);
+  }
+  .ppval .badge {
+    margin-left: auto;
+  }
+
+  /* ---- region and page states: shadcn's empty ---- */
+  .rs {
+    padding: 1.25rem 1.5rem;
+    border: 1px dashed var(--border);
+    border-radius: var(--radius-xl);
+  }
+  .rs .st {
+    display: flex;
+    align-items: center;
+    gap: 0.5rem;
+    font-size: 0.75rem;
+    font-weight: 500;
+    color: var(--muted-foreground);
+  }
+  .rs.warn .st {
+    color: var(--warning);
+  }
+  .rs.crit .st {
+    color: var(--destructive);
+  }
+  .rs.run .st {
+    color: var(--info);
+  }
+  .rs h2,
+  .rs h3,
+  .rs h4 {
+    margin: 0.5rem 0 0;
+    font-size: 1rem;
+    font-weight: 600;
+    letter-spacing: -0.01em;
+    color: var(--foreground);
+  }
+  .rs p {
+    max-width: 65ch;
+    margin: 0.25rem 0 0;
+    font-size: 0.875rem;
+    line-height: 1.55;
+    color: var(--muted-foreground);
+    text-wrap: pretty;
+  }
+  .rs .ts {
+    font: 400 0.75rem var(--font-mono);
+  }
+
+  /* ---- the evidence drawer and the passport dialog: a shadcn sheet and dialog ---- */
+  .scrim {
+    position: fixed;
+    inset: 0;
+    z-index: 40;
+    background: rgb(0 0 0 / 0.1);
+    backdrop-filter: blur(4px);
+    transition: opacity 200ms var(--ease-out);
+    @starting-style {
+      opacity: 0;
+    }
+  }
+  .drawer {
+    position: fixed;
+    top: 0;
+    right: 0;
+    bottom: 0;
+    z-index: 50;
+    display: flex;
+    flex-direction: column;
+    width: min(560px, 100%);
+    border-left: 1px solid var(--border);
+    background: var(--popover);
+    color: var(--popover-foreground);
+    box-shadow: var(--float-shadow);
+    transition:
+      translate 300ms var(--ease-drawer),
+      opacity 300ms var(--ease-drawer);
+    @starting-style {
+      translate: 2.5rem 0;
+      opacity: 0;
+    }
+  }
+  .modal {
+    position: fixed;
+    top: 10vh;
+    left: 50%;
+    z-index: 50;
+    width: min(36rem, calc(100% - 2rem));
+    max-height: 80vh;
+    overflow: auto;
+    border-radius: var(--radius-xl);
+    background: var(--popover);
+    color: var(--popover-foreground);
+    box-shadow: var(--float-shadow);
+    translate: -50% 0;
+    transition:
+      opacity 200ms var(--ease-out),
+      scale 200ms var(--ease-out);
+    @starting-style {
+      opacity: 0;
+      scale: 0.96;
+    }
+  }
+  /* Leaving mirrors arriving, a little quicker (N64: Base UI holds the
+     overlay mounted until this ends). */
+  .scrim[data-ending-style] {
+    opacity: 0;
+    transition-duration: 150ms;
+  }
+  .drawer[data-ending-style] {
+    translate: 2.5rem 0;
+    opacity: 0;
+    transition-duration: 200ms;
+  }
+  .modal[data-ending-style] {
+    opacity: 0;
+    scale: 0.96;
+    transition-duration: 150ms;
+  }
+  .drawer > .dhead,
+  .modal > .dhead {
+    display: flex;
+    flex: none;
+    align-items: center;
+    gap: 0.625rem;
+    min-height: 3.5rem;
+    padding: 0.5rem 0.75rem 0.5rem 1rem;
+    border-bottom: 1px solid var(--border);
+  }
+  .drawer > .dhead h2,
+  .modal > .dhead h2 {
+    min-width: 0;
+    margin: 0;
+    font-size: 1rem;
+    font-weight: 600;
+    letter-spacing: -0.01em;
+  }
+  .drawer .db {
+    display: flex;
+    flex: 1 1 auto;
+    flex-direction: column;
+    gap: 0.75rem;
+    padding: 1rem;
+    overflow: auto;
+  }
+  /* The evidence page is paper in either theme: ink on cream, with the marks
+     that point into it in paper's own blue (critique P0, 1.14:1). */
+  .pagerender {
+    position: relative;
+    overflow: hidden;
+    border: 1px solid var(--paper-rule);
+    border-radius: var(--radius-md);
+    background: var(--paper-bg);
+    color: var(--paper-ink);
+    box-shadow: 0 1px 2px rgb(0 0 0 / 0.08);
+  }
+  .pagerender img,
+  .pagerender svg {
+    display: block;
+    width: 100%;
+    height: auto;
+  }
+  /* The filed deliverable as paper (N62): ink on cream in either theme, a
+     sheet set on the page rather than a card in it. Its only colour is the
+     paper's own: blue for what points into the evidence, green for the stamp. */
+  .paper {
+    position: relative;
+    width: min(46rem, 100%);
+    padding: 2rem 2.25rem 1.25rem;
+    border-radius: var(--radius-md);
+    background: var(--paper-bg);
+    color: var(--paper-ink);
+    box-shadow: var(--paper-shadow);
+  }
+  /* A fixed page width, centred: the paper and the links that open and
+     download it, under the summary's full width (brief 5, Committee). */
+  .paper-desk {
+    display: grid;
+    gap: 0.75rem;
+    width: min(46rem, 100%);
+    margin-inline: auto;
+  }
+  .paper-desk > .paper {
+    width: 100%;
+  }
+  .paper-mast {
+    display: flex;
+    justify-content: space-between;
+    gap: 1rem;
+    padding-bottom: 0.5rem;
+    border-bottom: 1px solid var(--paper-rule);
+    font-size: 0.75rem;
+    font-weight: 500;
+    color: var(--paper-meta);
+  }
+  .paper h2 {
+    margin: 1.25rem 7rem 0.25rem 0;
+    font-size: 1.375rem;
+    font-weight: 650;
+    line-height: 1.25;
+    letter-spacing: -0.015em;
+    text-wrap: balance;
+  }
+  .paper-sub {
+    margin: 0;
+    font-size: 0.8125rem;
+    color: var(--paper-note);
+  }
+  .paper h3 {
+    margin: 1.5rem 0 0.5rem;
+    font-size: 0.75rem;
+    font-weight: 600;
+    letter-spacing: 0.02em;
+    color: var(--paper-meta);
+  }
+  .paper-body p {
+    margin: 0 0 0.75rem;
+    font-size: 1rem;
+    line-height: 1.65;
+    text-wrap: pretty;
+  }
+  .paper .chip {
+    border-color: var(--paper-rule);
+    background: transparent;
+    color: var(--paper-cite);
+  }
+  .paper .chip:hover {
+    background: color-mix(in oklab, var(--paper-cite) 8%, transparent);
+  }
+  /* A stamp, set once: a ruled box in the paper's green, turned a little as
+     a hand would, and never animated. */
+  /* Beside the title, clear of the mast's rule it used to cross. */
+  .paper-stamp {
+    position: absolute;
+    top: 4.25rem;
+    right: 2.25rem;
+    margin: 0;
+    padding: 0.25rem 0.75rem;
+    border: 2px solid var(--paper-stamp);
+    border-radius: var(--radius-sm);
+    color: var(--paper-stamp);
+    font-size: 0.875rem;
+    font-weight: 700;
+    letter-spacing: 0.08em;
+    rotate: -4deg;
+  }
+  .paper-sign {
+    display: grid;
+    grid-template-columns: max-content minmax(0, 1fr);
+    gap: 0.25rem 1rem;
+    margin: 1.25rem 0 0;
+    padding-top: 0.75rem;
+    border-top: 1px solid var(--paper-rule);
+    font-size: 0.8125rem;
+  }
+  .paper-sign dt {
+    color: var(--paper-meta);
+  }
+  .paper-sign dd {
+    margin: 0;
+    overflow-wrap: anywhere;
+  }
+  .paper-filed {
+    margin-top: 1rem;
+    padding-top: 0.5rem;
+    border-top: 1px solid var(--paper-rule);
+    font-size: 0.75rem;
+    color: var(--paper-note);
+    overflow-wrap: anywhere;
+  }
+  /* The paper quotes its ids in its own size, inline in its lines. */
+  .paper .digest {
+    display: inline;
+    font-size: inherit;
+  }
+  @media (max-width: 40rem) {
+    .paper {
+      padding: 1.25rem 1rem 1rem;
+    }
+    .paper-stamp {
+      position: static;
+      display: inline-block;
+      margin-top: 1rem;
+    }
+    .paper h2 {
+      margin-right: 0;
+    }
+  }
+  /* A line the rendered page does not show (N27): outlined in dashes on a
+     warm wash, so it reads as marked and not as cited. */
+  .pagerender [data-hidden] {
+    outline: 1px dashed var(--paper-hidden);
+    outline-offset: 1px;
+    background: color-mix(in oklab, var(--paper-hidden) 12%, transparent);
+  }
+  .bbox {
+    position: absolute;
+    border: 2px solid var(--paper-cite);
+    border-radius: 2px;
+    background: color-mix(in oklab, var(--paper-cite) 14%, transparent);
+  }
+  .bbox .lb {
+    position: absolute;
+    top: -1.125rem;
+    left: -2px;
+    padding: 0.0625rem 0.375rem;
+    border-radius: 3px;
+    background: var(--paper-cite);
+    color: var(--paper-bg);
+    font: 600 0.6875rem var(--font-mono);
+    white-space: nowrap;
+  }
+  /* A document's own words, quoted: prose in the body face on a quiet well. */
+  .matched {
+    padding: 0.75rem 1rem;
+    border-radius: var(--radius-lg);
+    background: var(--muted);
+    font: 400 0.875rem/1.6 var(--font-sans);
+    color: var(--foreground);
+    overflow-wrap: break-word;
+  }
+  /* The cited excerpt inside its whole source line (D105), in the ink of the
+     surface it sits on: a narrative figure is also read on Committee's paper. */
+  /* A citation marker in analysis text (D107): a chip beside the statement,
+     sitting on the line it is read in. */
+  .chip.cmark {
+    vertical-align: 1px;
+  }
+  .md-cites {
+    display: inline-flex;
+    flex-wrap: wrap;
+    gap: 0.25rem;
+    vertical-align: 1px;
+  }
+  /* Another module's citation named by its qualified marker (D107): a quiet
+     label in the mono face, nothing to press. */
+  .qmark {
+    font: 500 0.75rem/1 var(--font-mono);
+    color: var(--muted-foreground);
+    white-space: nowrap;
+  }
+  /* An unverified citation's marker (D106): labelled, dashed, inert -- never
+     the host-verified chip's fill, and nothing to press. */
+  .chip.unverified {
+    border-style: dashed;
+    border-color: var(--muted-foreground);
+    background: transparent;
+    color: var(--foreground);
+    cursor: default;
+  }
+  .chip.unverified:hover {
+    background: transparent;
+  }
+  .paper .chip.unverified {
+    border-color: var(--paper-rule);
+    color: var(--paper-meta);
+  }
+  /* A compact citation's excerpt (D107): about one line; its whole source line
+     is the drawer's. */
+  .facts .excerpt {
+    display: block;
+    color: var(--foreground);
+    overflow-wrap: anywhere;
+  }
+  /* Labels on Committee's paper take paper's own ink: the theme's muted ink
+     is 2.36:1 on cream in the dark scheme (NB2 review). */
+  .paper .lbl {
+    color: var(--paper-meta);
+  }
+  .figq-unverified {
+    text-decoration: underline dashed;
+    text-underline-offset: 3px;
+  }
+  .matched mark,
+  .figq mark {
+    padding: 0 0.125rem;
+    border-radius: 2px;
+    background: color-mix(in oklab, var(--info) 22%, transparent);
+    color: inherit;
+  }
+  .focusnote {
+    display: flex;
+    align-items: center;
+    gap: 0.5rem;
+    margin-top: auto;
+    padding-top: 0.75rem;
+    border-top: 1px solid var(--border);
+    font-size: 0.75rem;
+    color: var(--muted-foreground);
+  }
+  .focusnote b {
+    font-weight: 600;
+    color: var(--foreground);
+  }
+
+  /* ---- the route as a DAG ---- */
+  /* .dag is the scrolling window; .dagbox is sized to the layout, so the route
+     scrolls in its panel and never widens the page. */
+  .dag {
+    position: relative;
+    min-height: 368px;
+    overflow: auto;
+    border-radius: var(--radius-xl);
+    /* A well set into its panel, on a dot grid (D122). */
+    background:
+      radial-gradient(var(--route-dot) 1px, transparent 1.2px) 0 0 / 16px 16px,
+      var(--well);
+    box-shadow: var(--ring-well);
+    /* Overlay scrollbars hid that the route continues: keep the bar visible. */
+    scrollbar-gutter: stable;
+  }
+  .dag .dagbox {
+    position: relative;
+  }
+  .dag svg.edges {
+    position: absolute;
+    inset: 0;
+    width: 100%;
+    height: 100%;
+    pointer-events: none;
+  }
+  /* Square edges (RouteGraph.tsx `routeOf`), drawn as paths. */
+  .dag .edges path {
+    fill: none;
+    stroke: var(--route-edge);
+    stroke-width: 1.5;
+  }
+  .dag .edges path.req {
+    stroke: color-mix(in oklab, var(--info) 75%, transparent);
+  }
+  .dag .edges path.opt {
+    stroke: color-mix(in oklab, var(--muted-foreground) 80%, transparent);
+    stroke-dasharray: 4 3;
+  }
+  .dag .edges path.adv {
+    stroke: color-mix(in oklab, var(--muted-foreground) 60%, transparent);
+    stroke-dasharray: 2 3;
+  }
+  .dag .edges path.gate {
+    stroke: var(--warning);
+    stroke-width: 2;
+  }
+  .dag .edges path.cond {
+    stroke: color-mix(in oklab, var(--info) 55%, transparent);
+    stroke-dasharray: 6 3;
+  }
+  /* One column wide (NODE_W, set by RouteGraph.tsx), wrapping to a second line
+     above the nodes: a long stage name ran into the next column's. */
+  .stagehdr {
+    position: absolute;
+    top: 0.5rem;
+    display: -webkit-box;
+    overflow: hidden;
+    font-size: 0.75rem;
+    font-weight: 500;
+    line-height: 1.25;
+    color: var(--muted-foreground);
+    -webkit-box-orient: vertical;
+    -webkit-line-clamp: 2;
+  }
+  /* Sized by NODE_W and NODE_H in RouteGraph.tsx, with fixed line heights so
+     the two reason lines fit on every engine's fonts. */
+  .dag .node {
+    position: absolute;
+    box-sizing: border-box;
+    overflow: hidden;
+    padding: 0.3125rem 0.625rem 0.375rem;
+    border: 1px solid var(--border);
+    border-radius: var(--radius-lg);
+    background: var(--card);
+    color: inherit;
+    font-family: inherit;
+    text-align: left;
+    box-shadow: var(--control-shadow);
+    cursor: pointer;
+    transition:
+      border-color 150ms var(--ease-out),
+      box-shadow 150ms var(--ease-out),
+      scale 150ms var(--ease-out);
+  }
+  .dag .node:hover {
+    border-color: color-mix(in oklab, var(--foreground) 25%, transparent);
+  }
+  .dag .node:active {
+    scale: 0.98;
+  }
+  .dag .node .id {
+    display: flex;
+    align-items: center;
+    gap: 0.375rem;
+    font: 600 0.75rem/14px var(--font-mono);
+    color: var(--foreground);
+  }
+  /* The state line stays one line: 'RUNNABLE · FRONTIER' wrapping pushed the
+     reason out of the box. */
+  .dag .node .st {
+    display: flex;
+    align-items: center;
+    gap: 0.3125rem;
+    margin-top: 0.25rem;
+    font: 500 0.6875rem/14px var(--font-sans);
+    white-space: nowrap;
+  }
+  .dag .node .why {
+    display: -webkit-box;
+    overflow: hidden;
+    margin-top: 0.125rem;
+    font-size: 0.6875rem;
+    line-height: 14px;
+    color: var(--muted-foreground);
+    white-space: normal;
+    -webkit-box-orient: vertical;
+    -webkit-line-clamp: 2;
+  }
+  .dag .node.complete .st {
+    color: var(--success);
+  }
+  .dag .node.runnable {
+    border-color: color-mix(in oklab, var(--info) 55%, transparent);
+  }
+  .dag .node.runnable .st,
+  .dag .node.running .st {
+    color: var(--info);
+  }
+  .dag .node.running {
+    border-color: var(--info);
+    box-shadow: 0 0 0 3px color-mix(in oklab, var(--info) 20%, transparent);
+  }
+  .dag .node.restricted .st {
+    color: var(--success);
+  }
+  .dag .node.blocked {
+    border-style: dashed;
+    border-color: color-mix(in oklab, var(--destructive) 60%, transparent);
+  }
+  .dag .node.blocked .st {
+    color: var(--destructive);
+  }
+  /* A gate is amber on its edge and its diamond, never on the node it holds:
+     selection is the one ring a node wears, and it is the primary (brief 6.6,
+     D122). */
+  .dag .node[aria-pressed="true"] {
+    border-color: var(--primary);
+    box-shadow: 0 0 0 2px var(--ring);
+  }
+  .dag .gatemark {
+    position: absolute;
+    width: 0;
+    height: 0;
+  }
+  .gatebox {
+    position: absolute;
+    box-sizing: border-box;
+    width: 18px;
+    height: 18px;
+    border: 2px solid var(--warning);
+    background: color-mix(in oklab, var(--warning) 16%, transparent);
+    rotate: 45deg;
+  }
+  .dag .gatemark .gatebox {
+    top: -9px;
+    left: -9px;
+  }
+  .gatelbl {
+    position: absolute;
+    font: 500 0.6875rem var(--font-sans);
+    color: var(--warning);
+    white-space: nowrap;
+  }
+  .dag .gatemark .gatelbl {
+    top: 12px;
+    left: -24px;
+  }
+  /* State and selection clarify the dependency flow; only active work pulses. */
+  .dag .route-flow .edges path {
+    transition:
+      stroke 180ms var(--ease-out),
+      stroke-width 180ms var(--ease-out),
+      opacity 180ms var(--ease-out);
+    stroke-width: 1.75;
+  }
+  .dag .route-flow .edges path[data-progress="waiting"]:not(.gate) {
+    stroke: var(--muted-foreground);
+  }
+  .dag .route-flow .edges path[data-progress="active"]:not(.gate) {
+    stroke: var(--info);
+  }
+  .dag .route-flow .route-arrow {
+    fill: var(--muted-foreground);
+  }
+  .dag .route-flow .caos-running {
+    animation-duration: 1.92s;
+  }
+  .dag .route-flow[data-motion="paused"] .caos-running {
+    animation-play-state: paused;
+  }
+  .dag .route-flow .node {
+    transition:
+      border-color 180ms var(--ease-out),
+      background-color 180ms var(--ease-out),
+      box-shadow 180ms var(--ease-out),
+      scale 150ms var(--ease-out);
+  }
+  .dag .route-flow .node.runnable:not(.running) {
+    border-color: var(--border);
+  }
+  .dag .route-flow .node.runnable:not(.running) .st {
+    color: var(--muted-foreground);
+  }
+  .dag .route-flow .node.running:not([aria-pressed="true"]) {
+    box-shadow: none;
+    border-color: var(--info);
+  }
+  .dag .route-flow .gatemark[data-cleared="true"] .gatebox {
+    border-color: var(--muted-foreground);
+    background: var(--card);
+  }
+  @media (prefers-reduced-motion: reduce) {
+    .dag .route-flow .caos-running {
+      animation: none;
+    }
+    .dag .route-flow .edges path {
+      transition-property: stroke, opacity;
+      transition-duration: 100ms;
+    }
+    .dag .route-flow .node {
+      transition-property: color, background-color, border-color;
+      transition-duration: 100ms;
+    }
+  }
+
+  .dag .route-flow .edges path[data-connected="true"]:not(.gate) {
+    stroke: var(--primary);
+  }
+  .dag .route-flow .edges path[data-connected="true"] {
+    stroke-width: 3;
+  }
+  .dag .route-flow .node[aria-pressed="true"] {
+    background: var(--muted);
+  }
+  /* A route with nothing to draw: mark, title, one sentence. */
+  .route-empty {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    gap: 0.375rem;
+    padding: 2.5rem 1.5rem;
+    text-align: center;
+  }
+  .route-empty-title {
+    margin: 0.25rem 0 0;
+    font-size: 0.9375rem;
+    font-weight: 600;
+    color: var(--foreground);
+  }
+  .legend {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 0.5rem 1rem;
+    padding: 0.625rem 0.25rem 0;
+    font-size: 0.75rem;
+    color: var(--muted-foreground);
+  }
+  .legend i {
+    display: inline-block;
+    width: 18px;
+    height: 0;
+    margin-right: 0.375rem;
+    border-top: 2px solid color-mix(in oklab, var(--foreground) 22%, transparent);
+    vertical-align: middle;
+  }
+  .legend i.req {
+    border-color: color-mix(in oklab, var(--info) 75%, transparent);
+  }
+  .legend i.opt {
+    border-top-style: dashed;
+    border-color: var(--muted-foreground);
+  }
+  .legend i.adv {
+    border-top-style: dotted;
+    border-color: var(--muted-foreground);
+  }
+  .legend i.gate {
+    border-color: var(--warning);
+  }
+  .legend i.cond {
+    border-top-style: dashed;
+    border-color: color-mix(in oklab, var(--info) 55%, transparent);
+  }
+  /* Edge types are the bundle's codes, quoted as codes (DESIGN.md). */
+  .legend code {
+    font: 400 0.6875rem var(--font-mono);
+    color: var(--foreground);
+  }
+  .legend span {
+    display: inline-flex;
+    align-items: center;
+  }
+  .frontier {
+    display: grid;
+    grid-template-columns: auto 1fr auto;
+    align-items: center;
+    gap: 0.25rem 0.5rem;
+    padding: 0.625rem 1rem;
+    border-bottom: 1px solid var(--hairline);
+    font-size: 0.875rem;
+  }
+  .frontier:last-child {
+    border-bottom: 0;
+  }
+  .frontier .id {
+    font: 600 0.8125rem var(--font-mono);
+    color: var(--foreground);
+  }
+  .frontier .why {
+    grid-column: 1 / -1;
+    font-size: 0.8125rem;
+    color: var(--muted-foreground);
+  }
+
+  /* ---- fields: shadcn's input ---- */
+  /* One field idiom: a field inside a label draws its own edge, 3:1 on its
+     card, so an input is never an invisible box (WCAG 1.4.11), and is a 24px
+     target at 320px (WCAG 2.5.8, F110). */
+  .tin,
+  .fld input:not([type="checkbox"]):not([type="radio"]),
+  .fld select,
+  .fld textarea {
+    box-sizing: border-box;
+    min-width: 0;
+    height: 2rem;
+    min-height: 24px;
+    padding: 0.25rem 0.625rem;
+    border: 1px solid var(--input);
+    border-radius: var(--radius-lg);
+    background: var(--field-bg);
+    color: var(--foreground);
+    font: 400 0.875rem var(--font-sans);
+    box-shadow: var(--recessed-shadow);
+    transition:
+      border-color 150ms var(--ease-out),
+      box-shadow 150ms var(--ease-out);
+  }
+  .fld textarea {
+    height: auto;
+  }
+  .tin::placeholder,
+  .fld input::placeholder,
+  .fld textarea::placeholder {
+    color: var(--muted-foreground);
+  }
+  .tin:focus-visible,
+  .fld input:focus-visible,
+  .fld select:focus-visible,
+  .fld textarea:focus-visible {
+    border-color: var(--ring);
+    outline: none;
+    box-shadow: 0 0 0 3px color-mix(in oklab, var(--ring) 45%, transparent);
+  }
+  /* The narrative draft is a field like any other, sized for paragraphs. */
+  textarea.tin.tarea {
+    display: block;
+    width: 100%;
+    height: auto;
+    min-height: 6rem;
+    padding: 0.5rem 0.75rem;
+    line-height: 1.55;
+    resize: vertical;
+  }
+  /* A register's own command -- a new case, an admission -- is a toolbar
+     above its table; its reason and outcome wrap below it. */
+  .newcase,
+  .admitsources {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 0.5rem 0.75rem;
+    padding: 0.75rem 1rem;
+    border-bottom: 1px solid var(--border);
+  }
+  .newcase > .note,
+  .newcase > .fld-hint,
+  .newcase > details,
+  .newcase > [id],
+  .admitsources > .note {
+    flex-basis: 100%;
+  }
+  /* What is chosen: each file a chip, or the plain sentence that none is. */
+  .admit-chosen {
+    display: inline-flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 0.25rem;
+    min-width: 0;
+    font-size: 0.875rem;
+    color: var(--muted-foreground);
+  }
+  .admit-chosen .tag {
+    max-width: 100%;
+    overflow: hidden;
+    font: 400 0.75rem var(--font-mono);
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
+  /* ---- model prose, help, access ---- */
+  /* Model prose is text, never markup (AnalysisSection): wrapped at a reading
+     measure, so no line is clipped by its panel (critique P0). */
+  pre.model-text {
+    max-width: 72ch;
+    margin: 0;
+    font: 400 0.875rem/1.65 var(--font-sans);
+    white-space: pre-wrap;
+    overflow-wrap: anywhere;
+  }
+  /* How a page works, for whoever asks: closed by default, one line when closed. */
+  details.help {
+    max-width: 72ch;
+    margin-top: 0.5rem;
+    font-size: 0.8125rem;
+    line-height: 1.55;
+    color: var(--muted-foreground);
+  }
+  details.help > summary {
+    font-size: 0.8125rem;
+    font-weight: 500;
+    cursor: pointer;
+  }
+  details.help > summary:hover {
+    color: var(--foreground);
+  }
+  details.help[open] > summary {
+    margin-bottom: 0.25rem;
+  }
+  /* A saved artifact's signed record: one line when closed (D107). */
+  details.record {
+    margin-top: 0.75rem;
+  }
+  details.record > summary {
+    font-size: 0.8125rem;
+    font-weight: 500;
+    cursor: pointer;
+  }
+  details.record[open] > summary {
+    margin-bottom: 0.5rem;
+  }
+  /* One case's access: a line when closed, its members and forms when open. */
+  details.access > summary {
+    padding: 0.5rem 0;
+    font-size: 0.875rem;
+    font-weight: 600;
+    color: var(--foreground);
+    cursor: pointer;
+  }
+  details.access > summary .m {
+    margin-left: 0.375rem;
+    font-size: 0.8125rem;
+    font-weight: 400;
+    color: var(--muted-foreground);
+  }
+  details.access + details.access {
+    border-top: 1px solid var(--hairline);
+  }
+
+  /* ---- Analysis: evidence rail · module · selected ---- */
+  .analysis {
+    display: flex;
+    flex-direction: column;
+    gap: 1rem;
+  }
+  .analysis .register > li {
+    display: grid;
+    gap: 0.25rem;
+    padding: 0.625rem 1rem;
+    border-bottom: 1px solid var(--hairline);
+  }
+  .analysis .register > li:last-child {
+    border-bottom: 0;
+  }
+  /* A filename is an id: mono and regular, lighter than the headings over
+     it; its pages and citation count carry the weight (brief 5, Analysis). */
+  .analysis .register .nm {
+    font: 400 0.8125rem var(--font-mono);
+    overflow-wrap: anywhere;
+  }
+  .analysis .register .meta {
+    font: 400 0.8125rem var(--font-mono);
+    font-variant-numeric: tabular-nums;
+    color: var(--muted-foreground);
+  }
+  .analysis .register .meta .tag {
+    margin-right: 0.375rem;
+  }
+  /* A section's acts, grouped in the order they happen. */
+  .actgroup {
+    display: flex;
+    flex-direction: column;
+    gap: 1rem;
+  }
+  .actgroup > .grouphead,
+  .analysis .figures .grouphead h3 {
+    margin: 0.25rem 0 0;
+    font-size: 0.9375rem;
+    font-weight: 600;
+    letter-spacing: -0.01em;
+    color: var(--foreground);
+  }
+  /* A module's figures: two across where there is room, one on a narrow page. */
+  .analysis .figures {
+    display: flex;
+    flex-direction: column;
+    gap: 0.75rem;
+  }
+  /* The figures' header: its heading, the one key every figure shares, and
+     what the host calculated -- said once, not under every chart. */
+  .analysis .figures .grouphead {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: baseline;
+    gap: 0.25rem 1.25rem;
+  }
+  .analysis .figures .grouphead .chart-legend {
+    flex: 0 1 auto;
+    color: var(--muted-foreground);
+  }
+  /* What the host calculated is the key's caption, on its own line beneath
+     it: `.analysis .note`'s 50ch cap let it sit beside the key instead. */
+  .analysis .figures .grouphead .note {
+    flex-basis: 100%;
+    max-width: none;
+    font-size: 0.8125rem;
+  }
+  .analysis .figgrid {
+    display: grid;
+    /* `min(…, 100%)`: a 320 px track could not shrink on a 320 px screen and
+       pushed the page 16 px sideways (found when N56 put a module's figures
+       in the a11y matrix). */
+    grid-template-columns: repeat(auto-fit, minmax(min(320px, 100%), 1fr));
+    gap: 1rem;
+  }
+  .analysis .fig {
+    display: flex;
+    flex-direction: column;
+    min-width: 0;
+    padding: 1rem;
+    border-radius: var(--radius-xl);
+    background: var(--card);
+    box-shadow: var(--ring-card);
+  }
+  /* A row of cards reads as one (brief 6.4): every summary takes two lines,
+     so the plots start level, and the readout, legend and Table toggle sit
+     at the card's foot whatever the legend's length. */
+  .analysis .fig > .chart {
+    flex: 1;
+  }
+  .analysis .fig .chart-summary {
+    display: -webkit-box;
+    min-height: 2.5rem;
+    overflow: hidden;
+    line-height: 1.25rem;
+    -webkit-box-orient: vertical;
+    -webkit-line-clamp: 2;
+  }
+  .analysis .fig .chart-readout {
+    margin-top: auto;
+  }
+  /* CP-2B's catalysts (N56): a card like a figure's, the date in its own
+     column so the list reads down time, the event over what it means. */
+  .analysis .catalysts {
+    padding: 1rem;
+    border-radius: var(--radius-xl);
+    background: var(--card);
+    box-shadow: var(--ring-card);
+  }
+  .analysis .catalysts h4 {
+    margin: 0 0 0.5rem;
+    font-size: 0.875rem;
+    font-weight: 600;
+  }
+  .analysis .catalysts ol {
+    display: grid;
+    gap: 0.625rem;
+    margin: 0;
+    padding: 0;
+    list-style: none;
+  }
+  .analysis .catalysts li {
+    display: grid;
+    grid-template-columns: minmax(6.5rem, max-content) minmax(0, 1fr);
+    gap: 0.125rem 1rem;
+    font-size: 0.875rem;
+    line-height: 1.5;
+  }
+  .analysis .catalysts .when {
+    font: 400 0.8125rem/1.6 var(--font-mono);
+    color: var(--muted-foreground);
+  }
+  .analysis .catalysts .what {
+    display: flex;
+    flex-direction: column;
+    gap: 0.125rem;
+    min-width: 0;
+  }
+  .analysis .catalysts .what .tag {
+    align-self: flex-start;
+  }
+  .analysis .catalysts .src {
+    grid-column: 2;
+    font-size: 0.75rem;
+    color: var(--muted-foreground);
+    overflow-wrap: break-word;
+  }
+
+  /* ---- a module, in the five places every module shares (D60) ---- */
+  .analysis .module {
+    display: flex;
+    flex-direction: column;
+    gap: 1rem;
+    min-width: 0;
+  }
+  .analysis .modhead {
+    display: flex;
+    align-items: baseline;
+    gap: 0.5rem;
+    min-width: 0;
+  }
+  .analysis .modhead h2 {
+    margin: 0;
+    font-size: 1.125rem;
+    font-weight: 600;
+    letter-spacing: -0.015em;
+    color: var(--foreground);
+  }
+  .analysis .modhead .code {
+    font: 400 0.8125rem var(--font-mono);
+    color: var(--muted-foreground);
+  }
+  .analysis .modhead .right {
+    margin-left: auto;
+  }
+  /* The header's facts: one line where four rows were. */
+  .modfacts {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 0.25rem 1.25rem;
+    margin: -0.5rem 0 0;
+    padding: 0;
+    list-style: none;
+    font-size: 0.8125rem;
+    color: var(--muted-foreground);
+  }
+  .modfacts b {
+    font-weight: 500;
+    color: var(--foreground);
+  }
+  .modfacts .mono,
+  .modfacts time {
+    font-family: var(--font-mono);
+    color: var(--foreground);
+  }
+  /* What the run rests on, counted; it opens in the evidence drawer. */
+  .evidence-count {
+    display: inline-flex;
+    align-items: center;
+    gap: 0.25rem;
+    min-height: 24px;
+    padding: 0 0.5rem;
+    border: 1px solid var(--border);
+    border-radius: 999px;
+    background: var(--card);
+    box-shadow: 0 1px 0 color-mix(in oklab, var(--foreground) 6%, transparent);
+    font-size: 0.75rem;
+    font-weight: 500;
+    color: var(--foreground);
+    cursor: pointer;
+    transition:
+      background-color 150ms var(--ease-out),
+      scale 150ms var(--ease-out);
+  }
+  .evidence-count:hover {
+    background: var(--muted);
+  }
+  .evidence-count:active {
+    scale: 0.97;
+  }
+  /* It opens a drawer, and says so. */
+  .evidence-count::after {
+    content: "";
+    width: 0.375rem;
+    height: 0.375rem;
+    margin-left: 0.25rem;
+    border-top: 1.5px solid currentColor;
+    border-right: 1.5px solid currentColor;
+    rotate: 45deg;
+    opacity: 0.6;
+  }
+  .evidence-count .withdrawn {
+    display: inline-flex;
+    align-items: center;
+    gap: 0.25rem;
+    color: var(--warning);
+  }
+  /* A panel caption that says the model wrote it carries the model's mark:
+     outlined and hatched, as its figures are. */
+  .pnl > header .cp.model::before {
+    content: "";
+    display: inline-block;
+    width: 0.625rem;
+    height: 0.625rem;
+    margin-right: 0.375rem;
+    vertical-align: -1px;
+    border: 1.25px solid var(--muted-foreground);
+    border-radius: 2px;
+    background: repeating-linear-gradient(
+      135deg,
+      transparent 0 2px,
+      color-mix(in oklab, var(--muted-foreground) 55%, transparent) 2px 3px
+    );
+  }
+
+  /* The lead: the model's view beside the figures and caveats that qualify it. */
+  .analysis .lead {
+    display: grid;
+    grid-template-columns: minmax(0, 1.65fr) minmax(17rem, 1fr);
+    align-items: start;
+    gap: 1rem;
+  }
+  /* Nothing to set beside the view: it takes the width. */
+  .analysis .lead[data-solo] {
+    grid-template-columns: minmax(0, 1fr);
+  }
+  .analysis .lead > .side {
+    display: flex;
+    flex-direction: column;
+    gap: 1rem;
+    min-width: 0;
+  }
+  @media (max-width: 1199px) {
+    .analysis .lead {
+      grid-template-columns: minmax(0, 1fr);
+    }
+  }
+  .analysis .lead .view > .pb {
+    display: flex;
+    flex-direction: column;
+    gap: 0.75rem;
+  }
+  /* The opening's first sentence is the page's first sentence (D62): large,
+     the rest of its paragraph quieter beneath it. */
+  .analysis .thesis .lede {
+    max-width: 34em;
+    font-size: 1.1875rem;
+    font-weight: 500;
+    line-height: 1.45;
+    letter-spacing: -0.012em;
+    text-wrap: pretty;
+  }
+  .analysis .thesis .lede strong {
+    font-weight: 600;
+  }
+  .analysis .thesis .cont {
+    max-width: 60ch;
+    margin-top: 0.625rem;
+    color: var(--muted-foreground);
+  }
+  .analysis .thesis .cont strong {
+    color: var(--foreground);
+  }
+  /* The decision drivers, one claim a line, what supports it beneath. */
+  .analysis .keypoints {
+    margin-top: 0.25rem;
+    padding-top: 0.875rem;
+    border-top: 1px solid var(--hairline);
+  }
+  .analysis .md .keypoints > h4 {
+    margin: 0;
+    font-size: 0.8125rem;
+    font-weight: 600;
+  }
+  .analysis .keypoints > .intro {
+    margin-top: 0.125rem;
+    font-size: 0.8125rem;
+    color: var(--muted-foreground);
+  }
+  .analysis .md .keypoints > ol {
+    display: grid;
+    gap: 0.875rem;
+    margin: 0.75rem 0 0;
+    padding: 0;
+    list-style: none;
+  }
+  .analysis .keypoints li {
+    display: grid;
+    grid-template-columns: 1.375rem minmax(0, 1fr);
+    gap: 0.625rem;
+    max-width: 66ch;
+  }
+  .analysis .keypoints .n {
+    display: inline-grid;
+    place-items: center;
+    width: 1.375rem;
+    height: 1.375rem;
+    border-radius: 999px;
+    background: var(--muted);
+    font: 500 0.6875rem var(--font-mono);
+    color: var(--muted-foreground);
+  }
+  .analysis .keypoints .claim {
+    font-weight: 600;
+    line-height: 1.45;
+  }
+  .analysis .keypoints .claim strong {
+    font-weight: inherit;
+  }
+  .analysis .keypoints .support {
+    margin-top: 0.25rem;
+    font-size: 0.8125rem;
+    line-height: 1.55;
+    color: var(--muted-foreground);
+  }
+  .analysis .keypoints .support[data-clamped] {
+    display: -webkit-box;
+    overflow: hidden;
+    -webkit-box-orient: vertical;
+    -webkit-line-clamp: 3;
+  }
+  .analysis .keypoints .more {
+    margin-top: 0.25rem;
+    padding: 0;
+    border: 0;
+    background: none;
+    font-size: 0.75rem;
+    font-weight: 500;
+    color: var(--foreground);
+    text-decoration: underline;
+    text-underline-offset: 2px;
+    cursor: pointer;
+  }
+  /* A module reference, as a way to it. */
+  .md-refs {
+    display: inline-flex;
+    flex-wrap: wrap;
+    gap: 0.25rem;
+    vertical-align: 1px;
+  }
+  .md .ref,
+  .ref {
+    display: inline-flex;
+    align-items: center;
+    height: 1.25rem;
+    padding: 0 0.375rem;
+    border: 1px solid var(--border);
+    border-radius: 0.3125rem;
+    background: var(--card);
+    font: 500 0.6875rem/1 var(--font-mono);
+    color: var(--foreground);
+    text-decoration: none;
+    white-space: nowrap;
+    transition: background-color 150ms var(--ease-out);
+  }
+  a.ref:hover {
+    background: var(--muted);
+  }
+  span.ref {
+    color: var(--muted-foreground);
+  }
+
+  /* Model Markdown, formatted: render.py's closed element set as elements. */
+  .md {
+    min-width: 0;
+    font-size: 0.875rem;
+    line-height: 1.65;
+    color: var(--foreground);
+  }
+  .md > * + * {
+    margin-top: 0.75rem;
+  }
+  /* A reading measure: Geist's "0" is wider than its average letter, so
+     60ch holds about 65 characters a line. */
+  .md > p,
+  .md > ul,
+  .md > ol,
+  .md > blockquote,
+  .md > h4,
+  .md > h5,
+  .md > h6 {
+    max-width: 60ch;
+  }
+  .md p {
+    margin: 0;
+    text-wrap: pretty;
+  }
+  .md h4,
+  .md h5,
+  .md h6 {
+    margin: 1.5rem 0 0;
+    font-size: 0.9375rem;
+    font-weight: 600;
+    line-height: 1.4;
+    letter-spacing: -0.01em;
+    text-wrap: balance;
+  }
+  .md h5,
+  .md h6 {
+    font-size: 0.875rem;
+  }
+  .md > :is(h4, h5, h6):first-child {
+    margin-top: 0;
+  }
+  .md > :is(h4, h5, h6) + * {
+    margin-top: 0.375rem;
+  }
+  .md ul,
+  .md ol {
+    margin: 0;
+    padding-left: 1.25rem;
+  }
+  .md ul {
+    list-style: disc;
+  }
+  .md ol {
+    list-style: decimal;
+  }
+  .md li + li {
+    margin-top: 0.375rem;
+  }
+  .md li::marker {
+    font: 400 0.8125rem var(--font-mono);
+    color: var(--muted-foreground);
+  }
+  /* A list whose ordinals are not a consecutive run prints each as written. */
+  .md :is(ol, ul).md-literal {
+    padding-left: 0;
+    list-style: none;
+  }
+  .md .md-marker {
+    display: inline-block;
+    min-width: 1.5rem;
+    margin-right: 0.25rem;
+    font: 400 0.8125rem var(--font-mono);
+    color: var(--muted-foreground);
+  }
+  .md strong {
+    font-weight: 600;
+  }
+  .md code {
+    padding: 0.0625rem 0.3125rem;
+    border-radius: var(--radius-sm);
+    background: var(--muted);
+    font: 400 0.8125rem var(--font-mono);
+  }
+  .md blockquote {
+    margin: 0;
+    padding-left: 0.875rem;
+    border-left: 2px solid var(--border);
+    color: var(--muted-foreground);
+  }
+  .md hr {
+    border: 0;
+    border-top: 1px solid var(--border);
+  }
+  .md .md-comment {
+    font: 400 0.75rem var(--font-mono);
+    color: var(--muted-foreground);
+    overflow-wrap: anywhere;
+  }
+  .md .md-code,
+  .md-front {
+    margin: 0;
+  }
+  .md .md-code figcaption {
+    font: 400 0.75rem var(--font-mono);
+    color: var(--muted-foreground);
+  }
+  .md .md-code pre,
+  .md-front,
+  pre.model-text.written {
+    max-width: none;
+    margin: 0;
+    padding: 0.75rem 1rem;
+    border-radius: var(--radius-lg);
+    background: var(--muted);
+    font: 400 0.8125rem/1.6 var(--font-mono);
+    white-space: pre-wrap;
+    overflow-wrap: anywhere;
+  }
+  /* An authored table: a text column wraps in the body face; a column whose
+     every cell is a figure is mono and right aligned (Numeric truth). */
+  /* Words wrap; an identifier or a file name keeps its line and widens its
+     column, which the table's own scroll then carries. */
+  table.md-table td.l {
+    min-width: 18ch;
+    max-width: 44ch;
+    white-space: normal;
+    line-height: 1.5;
+    overflow-wrap: break-word;
+  }
+  table.md-table td {
+    vertical-align: top;
+  }
+  table.md-table td .tag {
+    font-family: var(--font-mono);
+  }
+
+  /* Key figures: the host-typed headline numbers, two across. */
+  .stats {
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    margin: 0;
+    padding: 0;
+    list-style: none;
+  }
+  .stats > li {
+    display: grid;
+    gap: 0.125rem;
+    min-width: 0;
+    padding: 0.75rem 1rem;
+    border-bottom: 1px solid var(--hairline);
+  }
+  .stats > li:nth-child(odd) {
+    border-right: 1px solid var(--hairline);
+  }
+  .stats > li:nth-last-child(-n + 2):nth-child(odd),
+  .stats > li:last-child {
+    border-bottom: 0;
+  }
+  .stats .k {
+    font-size: 0.75rem;
+    color: var(--muted-foreground);
+  }
+  .stats .v {
+    font: 600 1.25rem/1.3 var(--font-sans);
+    letter-spacing: -0.01em;
+    overflow-wrap: anywhere;
+  }
+  .stats .d {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: baseline;
+    gap: 0.125rem 0.375rem;
+    font-size: 0.75rem;
+    color: var(--muted-foreground);
+  }
+  .stats .delta {
+    font: 500 0.75rem var(--font-mono);
+    color: var(--foreground);
+  }
+
+  /* Caveats: what qualifies the view, read before the figures. */
+  ul.caveats {
+    display: grid;
+    margin: 0;
+    padding: 0;
+    list-style: none;
+  }
+  ul.caveats > li {
+    display: grid;
+    grid-template-columns: 0.75rem minmax(0, 1fr);
+    align-items: baseline;
+    gap: 0.5rem;
+    padding: 0.625rem 1rem;
+    border-bottom: 1px solid var(--hairline);
+    font-size: 0.8125rem;
+    line-height: 1.5;
+  }
+  ul.caveats > li:last-child {
+    border-bottom: 0;
+  }
+  ul.caveats > li > span:last-child {
+    min-width: 0;
+    overflow-wrap: anywhere;
+  }
+  ul.caveats b {
+    font-weight: 600;
+  }
+  ul.caveats .src {
+    display: block;
+    font-size: 0.75rem;
+    color: var(--muted-foreground);
+  }
+
+  /* The reader-facing sections: a labelled list reads as columns. */
+  .analysis .cols {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(min(15rem, 100%), 1fr));
+  }
+  .analysis .cols > div {
+    padding: 1rem;
+    border-right: 1px solid var(--hairline);
+  }
+  .analysis .cols > div:last-child {
+    border-right: 0;
+  }
+  .analysis .cols h4 {
+    margin: 0 0 0.25rem;
+    font-size: 0.875rem;
+    font-weight: 600;
+  }
+  .analysis .cols p {
+    margin: 0;
+    font-size: 0.8125rem;
+    line-height: 1.55;
+  }
+
+  /* Depth: one card of tabs, the same three in every module. */
+  .analysis .depth > [data-slot="tabs"] {
+    gap: 0;
+  }
+  .analysis .depth header {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 0.5rem 0.75rem;
+    padding: 0.5rem 1rem;
+    border-bottom: 1px solid var(--border);
+  }
+  .analysis .depth header .cp {
+    font-size: 0.75rem;
+    color: var(--muted-foreground);
+  }
+  .analysis .depth .count {
+    display: inline-flex;
+    align-items: center;
+    gap: 0.25rem;
+    font: 400 0.75rem var(--font-mono);
+    color: var(--muted-foreground);
+  }
+  .analysis .depthpanel {
+    display: flex;
+    flex-direction: column;
+    gap: 1.75rem;
+    padding: 1rem;
+  }
+  .analysis .depthpanel > .group > h3 {
+    margin: 0 0 0.75rem;
+    font-size: 0.9375rem;
+    font-weight: 600;
+    letter-spacing: -0.01em;
+  }
+  .analysis .depthpanel h3 .cp {
+    margin-left: 0.375rem;
+    font-size: 0.75rem;
+    font-weight: 400;
+    color: var(--muted-foreground);
+  }
+  .analysis .depthpanel .md + .regs {
+    margin-top: 1rem;
+  }
+  /* A note is read, not scanned: about 72 characters a line. */
+  .analysis .note {
+    max-width: 50ch;
+  }
+  /* The appendix as an index: a register a line -- id, name, rows -- opened
+     in place, one at a time. */
+  .analysis .regindex {
+    margin: 0;
+    padding: 0;
+    list-style: none;
+    border-top: 1px solid var(--hairline);
+  }
+  .analysis .regindex > li {
+    border-bottom: 1px solid var(--hairline);
+  }
+  .analysis .regindex h4 {
+    margin: 0;
+    font: inherit;
+  }
+  .analysis .regindex button {
+    display: flex;
+    align-items: baseline;
+    gap: 1rem;
+    width: 100%;
+    min-height: 2.5rem;
+    padding: 0.625rem 0.5rem;
+    border: 0;
+    background: transparent;
+    text-align: left;
+    font-size: 0.875rem;
+    font-weight: 500;
+    color: var(--foreground);
+    cursor: pointer;
+    transition: background-color 150ms var(--ease-out);
+  }
+  .analysis .regindex button:hover {
+    background: var(--muted);
+  }
+  .analysis .regindex .nm {
+    display: flex;
+    flex: 1;
+    flex-wrap: wrap;
+    align-items: baseline;
+    gap: 0.25rem 0.625rem;
+    min-width: 0;
+  }
+  .analysis .regindex .id,
+  .analysis .regindex .n {
+    font: 400 0.75rem var(--font-mono);
+    color: var(--muted-foreground);
+    font-variant-numeric: tabular-nums;
+  }
+  .analysis .regindex .chev {
+    flex: none;
+    align-self: center;
+    width: 0.4375rem;
+    height: 0.4375rem;
+    margin: 0 0.25rem;
+    border-right: 1.5px solid var(--muted-foreground);
+    border-bottom: 1.5px solid var(--muted-foreground);
+    rotate: -45deg;
+    transition: rotate 150ms var(--ease-out);
+  }
+  .analysis .regindex button[aria-expanded="true"] .chev {
+    rotate: 45deg;
+  }
+  .analysis .regindex .reg {
+    display: flex;
+    flex-direction: column;
+    align-items: flex-start;
+    gap: 0.75rem;
+    padding: 0.25rem 0.5rem 1.25rem;
+  }
+  .analysis .regindex .reg > * {
+    max-width: 100%;
+  }
+  .analysis .regindex .reg[data-shape="findings"] > *,
+  .analysis .regindex .reg[data-shape="triggers"] > *,
+  .analysis .regindex .reg[data-shape="debate"] > *,
+  .analysis .regindex .reg[data-shape="timeline"] > * {
+    align-self: stretch;
+  }
+  @media (prefers-reduced-motion: reduce) {
+    .analysis .regindex .chev {
+      transition: none;
+    }
+  }
+  /* Registers pack at their natural width: side by side when both fit whole,
+     stacked when not, so no table is squeezed into a scroll it does not need. */
+  .analysis .regs {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: flex-start;
+    gap: 1.5rem 2rem;
+  }
+  .analysis .regs > .reg {
+    flex: 1 0 auto;
+    min-width: 0;
+    max-width: 100%;
+  }
+  /* By `data-shape`, never a class: a shape named "table" would meet
+     Tailwind's `.table` utility and lay the register out as a table. */
+  .analysis .regs > .reg[data-shape="findings"],
+  .analysis .regs > .reg[data-shape="triggers"],
+  .analysis .regs > .reg[data-shape="debate"],
+  .analysis .regs > .reg[data-shape="timeline"] {
+    flex-basis: 100%;
+  }
+  .analysis .reghead {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: baseline;
+    gap: 0.5rem;
+    margin: 0 0 0.375rem;
+    font-size: 0.8125rem;
+    font-weight: 600;
+  }
+  .analysis .reghead .id {
+    font: 400 0.75rem var(--font-mono);
+    color: var(--muted-foreground);
+  }
+  .analysis .reg > .md {
+    margin-bottom: 0.5rem;
+  }
+  /* An evidence chain read down, two across where there is room: what, so
+     what, why, on what. */
+  .analysis ol.items {
+    display: grid;
+    grid-template-columns: repeat(auto-fill, minmax(min(22rem, 100%), 1fr));
+    gap: 0 2rem;
+    margin: 0;
+    padding: 0;
+    list-style: none;
+  }
+  .analysis ol.items > li {
+    display: grid;
+    align-content: start;
+    gap: 0.375rem;
+    min-width: 0;
+    padding: 0.875rem 0;
+    border-top: 1px solid var(--hairline);
+  }
+  .analysis ol.items .ih {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 0.375rem 0.5rem;
+    font-size: 0.875rem;
+    font-weight: 600;
+  }
+  .analysis ol.items .ih .tag {
+    font-weight: 500;
+  }
+  .analysis ol.items .ih .st {
+    font-size: 0.75rem;
+    font-weight: 500;
+    color: var(--muted-foreground);
+  }
+  .analysis ol.items .im {
+    margin: 0;
+    font-size: 0.875rem;
+    line-height: 1.6;
+  }
+  .analysis ol.items dl {
+    display: grid;
+    gap: 0.25rem;
+    margin: 0;
+    font-size: 0.8125rem;
+    line-height: 1.5;
+  }
+  .analysis ol.items dl > div {
+    display: grid;
+    grid-template-columns: minmax(6rem, 30%) minmax(0, 1fr);
+    gap: 0 0.75rem;
+  }
+  .analysis ol.items dt {
+    color: var(--muted-foreground);
+  }
+  .analysis ol.items dd {
+    margin: 0;
+  }
+  .analysis ol.items .iw {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 0 0.75rem;
+    margin: 0;
+    font-size: 0.75rem;
+    color: var(--muted-foreground);
+    overflow-wrap: anywhere;
+  }
+  .analysis ol.items .iw:empty {
+    display: none;
+  }
+  /* A dated register, read down time (the Catalysts card's shape). */
+  .analysis ol.dated {
+    display: grid;
+    gap: 0.625rem;
+    margin: 0;
+    padding: 0;
+    list-style: none;
+  }
+  .analysis ol.dated li {
+    display: grid;
+    grid-template-columns: minmax(6.5rem, max-content) minmax(0, 1fr);
+    gap: 0.125rem 1rem;
+    font-size: 0.875rem;
+    line-height: 1.5;
+  }
+  .analysis ol.dated .when {
+    font: 400 0.8125rem/1.6 var(--font-mono);
+    color: var(--muted-foreground);
+  }
+  .analysis ol.dated .what {
+    display: flex;
+    flex-direction: column;
+    gap: 0.125rem;
+    min-width: 0;
+  }
+  .analysis ol.dated .more {
+    font-size: 0.8125rem;
+    color: var(--muted-foreground);
+  }
+  /* The Audit tab's lists of what the run rests on and the module's citations. */
+  .analysis ul.register,
+  .analysis ul.facts {
+    margin: 0;
+    padding: 0;
+  }
+  .analysis ul.facts > li {
+    display: grid;
+    gap: 0.375rem;
+    padding: 0.625rem 0;
+    border-bottom: 1px solid var(--hairline);
+  }
+  .analysis ul.facts > li:last-child {
+    border-bottom: 0;
+  }
+  .drawer ul.register > li {
+    display: grid;
+    gap: 0.25rem;
+    padding: 0.625rem 0;
+    border-bottom: 1px solid var(--hairline);
+  }
+  .register-citations {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 0.375rem;
+    margin: 0;
+    padding: 0;
+    list-style: none;
+  }
+  .drawer ul.register .nm {
+    font-weight: 600;
+    overflow-wrap: anywhere;
+  }
+  .drawer ul.register .meta {
+    font: 400 0.8125rem var(--font-mono);
+    color: var(--muted-foreground);
+  }
+  .drawer ul.register .meta .tag {
+    margin-right: 0.375rem;
+  }
+}
+
+/* The header's warning chips say what the summary's verdict says: while the
+   summary is on screen they give way to it (SectionSummary.tsx), and carry
+   the warning once it scrolls away. A zoomed window (400%, D63) always shows
+   them, its summary being below the fold. Outside the layer, so a badge's own display utility
+   cannot win over it. */
+@media (min-width: 48rem) {
+  :root[data-summary-in-view] .header-chip {
+    display: none;
+  }
+}
+
+/* Accepted Module workbench (D74): compact spacing, a 13rem module index at every desk width.
+   Outside the components layer so these layout rules override shell utilities. */
+
+.module-workbench > [data-slot="sidebar-inset"] {
+  min-width: 0;
+}
+.module-workbench main {
+  gap: 0.8rem;
+  padding: 1.2rem;
+}
+.module-workbench [data-section-tabs] {
+  position: static;
+  margin: 0;
+  padding: 0;
+}
+.module-workbench [data-section-tabs] [role="tablist"] {
+  flex-wrap: wrap;
+  overflow: visible;
+  gap: 0.25rem;
+}
+.module-workbench [data-section-tabs] [role="tab"] {
+  height: auto;
+  min-height: 1.75rem;
+  white-space: normal;
+  text-align: left;
+}
+.module-workbench [data-section-tabs] [data-selected-view] {
+  padding: 0.5rem 0 0;
+  color: var(--muted-foreground);
+  font-size: 0.8125rem;
+}
+.module-workbench .analysis .module {
+  gap: 0.8rem;
+}
+.module-workbench .analysis .lead {
+  grid-template-columns: minmax(0, 1fr);
+}
+.module-workbench .analysis .lead > .side {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(min(17rem, 100%), 1fr));
+  align-items: start;
+}
+.module-workbench .analysis .figgrid {
+  gap: 0.8rem;
+}
+.module-workbench .analysis .modhead {
+  flex-wrap: wrap;
+}
+.module-workbench .analysis .modfacts {
+  row-gap: 0.5rem;
+}
+/* The section on screen is raised off the sidebar (D122). */
+.module-workbench [data-sidebar="menu-button"][aria-current="page"] {
+  background: var(--sidebar-accent);
+  color: var(--sidebar-accent-foreground);
+  box-shadow: var(--raised-shadow);
+}
+@media (max-width: 767px) {
+  .module-workbench main {
+    padding: 1rem;
+  }
+}
+
+.module-workbench [data-summary] {
+  border-radius: var(--radius-xl);
+}
+.module-workbench .analysis .modhead {
+  padding-bottom: 0.75rem;
+  border-bottom: 1px solid var(--border);
+}
+.module-workbench .analysis .modfacts {
+  padding: 0.75rem 1rem;
+  background: var(--muted);
+  border-radius: var(--radius-xl);
+}
+.module-workbench .analysis .fig {
+  padding: 0.7rem;
+}
+/* The index spans two rows in the first column and the view takes the second,
+   in document order: nothing may stand between `[data-section-tabs]` and the
+   tabpanel, or the view drops below a blank column (F458). Workspace.tsx renders
+   the page banners before the tabs for that reason; a state drawn between them
+   (RegionState's observed-empty notice) is safe only while no such document
+   has views. */
+@media (min-width: 1024px) {
+  .module-workbench main:has(> [data-section-tabs]) {
+    display: grid;
+    grid-template-columns: 13rem minmax(0, 1fr);
+    align-content: start;
+    column-gap: 1.5rem;
+  }
+  .module-workbench main:has(> [data-section-tabs]) > * {
+    grid-column: 1 / -1;
+    min-width: 0;
+  }
+  /* The module index is a card of its own beside the view (D122). */
+  .module-workbench main > [data-section-tabs] {
+    grid-column: 1;
+    grid-row: auto / span 2;
+    position: sticky;
+    top: 4.5rem;
+    align-self: start;
+    max-height: calc(100svh - 6rem);
+    overflow-y: auto;
+    padding: 0.375rem;
+    border-radius: var(--radius-xl);
+    background: var(--card);
+    box-shadow: var(--ring-card);
+  }
+  .module-workbench main > [role="tabpanel"] {
+    grid-column: 2;
+  }
+  .module-workbench [data-section-tabs] [role="tablist"] {
+    flex-direction: column;
+    align-items: stretch;
+  }
+  .module-workbench [data-section-tabs] [role="tab"] {
+    justify-content: flex-start;
+    min-height: 2.25rem;
+    padding: 0.5rem;
+  }
+  .module-workbench [data-section-tabs] [role="tab"] > span {
+    text-align: left;
+  }
+  /* At the head of the index card, in line with the tabs under it. */
+  .module-workbench [data-section-tabs] [data-selected-view] {
+    padding: 0.25rem 0.5rem 0.5rem;
+  }
+}

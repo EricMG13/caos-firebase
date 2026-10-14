@@ -1,0 +1,1037 @@
+// The v1 section documents and the refusal body, one shape per model in
+// `caos/api/wire.py`, named as there. `schema.json` beside this file is the
+// backend's emitted schema; tests/unit/wire-contract.test.ts proves these
+// shapes normalise to it exactly.
+import {
+  type Infer,
+  array,
+  bool,
+  datetime,
+  enumOf,
+  int,
+  literal,
+  nullable,
+  number,
+  object,
+  parse,
+  string,
+  uuid,
+  type Shape,
+} from "./shape";
+
+const SHORT = 256;
+const TEXT = 4096;
+const hash = string({ max: 64, pattern: "^[0-9a-f]{64}$" });
+const short = string({ max: SHORT });
+const text = string({ max: TEXT });
+const RUN_STATUSES = ["RUNNING", "COMPLETE", "FAILED", "BLOCKED", "CANCELLED"] as const;
+
+const GlobalRole = enumOf(["READER", "ANALYST", "ADMIN"]);
+const Standing = enumOf(["READER", "WRITER", "APPROVER", "ADMIN"]);
+const SectionNote = enumOf(["LIST_TRUNCATED", "ROUTE_NOT_PINNED", "HANDOFFS_PENDING"]);
+const NodeState = enumOf(["COMPLETE", "RUNNABLE", "RESTRICTED", "BLOCKED"]);
+const EdgeType = enumOf(["REQUIRED", "CONDITIONAL", "QA_GATE", "OPTIONAL", "ADVISORY"]);
+const Gate = enumOf(["SOURCE_SET", "RESEARCH_PLAN"]);
+const GateState = enumOf(["OPEN", "RELEASED"]);
+
+/** A shape declared further down this file, resolved only when first used. */
+function later<T>(get: () => Shape<T>): Shape<T> {
+  return {
+    check: (value, path): value is T => get().check(value, path),
+    toSchema: () => get().toSchema(),
+  };
+}
+
+const ActionName = enumOf([
+  "CREATE_CASE",
+  "ADMIT_SOURCES",
+  "CREATE_RUN",
+  "PIN_RUN_INPUT",
+  "APPROVE_SOURCE_SET",
+  "APPROVE_RESEARCH_PLAN",
+  "START_RUN",
+  "RETRY_RUN",
+  "CANCEL_RUN",
+  "WITHDRAW_SOURCE",
+  "GRANT_STANDING",
+  "REVOKE_STANDING",
+  "SAVE_REVISION",
+  "SIGN_OPINION",
+  "FREEZE_DELIVERABLE",
+  "FILE_DELIVERABLE",
+]);
+
+const Subject = object({ case_id: uuid, title: text });
+const ServedRole = object({ global_role: GlobalRole, standing: nullable(Standing) });
+// Server-computed and advisory: a refused action is shown with its code, and
+// the command rechecks at commit (brief 4.2, decision 10).
+const ActionView = object({
+  action: ActionName,
+  refusal: nullable(later(() => RefusalBody)),
+});
+const Chrome = object({
+  subject: nullable(Subject),
+  served_role: ServedRole,
+  actions: array(ActionView, 16),
+});
+
+function sectionDocument<B extends ReturnType<typeof object>>(body: B) {
+  return object({
+    chrome: Chrome,
+    body,
+    observed_at: datetime,
+    observed_empty: bool,
+    status: enumOf(["complete", "partial"]),
+    notes: array(SectionNote, 3),
+  });
+}
+
+const RefusalCode = enumOf([
+  "BOUNDARY_TEXT_INVALID",
+  "BOUNDARY_TEXT_TOO_LONG",
+  "BLOB_DIGEST_MISMATCH",
+  "BLOB_NOT_FOUND",
+  "BLOB_ADDRESS_INVALID",
+  "RUN_NOT_FOUND",
+  "RUN_NOT_RUNNING",
+  "RUN_NOT_BLOCKED",
+  "RUN_ALREADY_SUPERSEDED",
+  "LEASE_NOT_HELD",
+  "RUN_CANCEL_REQUESTED",
+  "RUN_NODES_UNACCEPTED",
+  "RUN_TERMINAL_STALE",
+  "ATTEMPT_NOT_FOUND",
+  "ATTEMPT_LIMIT_REACHED",
+  "ATTEMPT_UNSETTLED",
+  "CALL_OUTCOME_INVALID",
+  "CALL_OUTCOME_CONFLICT",
+  "CALL_OUTCOME_LEGACY",
+  "CALL_OUTCOME_UNEXPLAINED",
+  "NODE_ALREADY_ACCEPTED",
+  "MONEY_NOT_DECIMAL",
+  "MONEY_INVALID",
+  "BUDGET_ALREADY_RESERVED",
+  "BUDGET_NOT_RESERVED",
+  "BUDGET_CEILING_REACHED",
+  "PROVIDER_NOT_CONFIGURED",
+  "PROVIDER_CALL_INVALID",
+  "CONTEXT_OVER_CEILING",
+  "UPSTREAM_SECTION_OVER_CEILING",
+  "RESERVATION_BELOW_REQUEST",
+  "BUDGET_CHARGE_OVER_RESERVATION",
+  "PROVIDER_UNAVAILABLE",
+  "PROVIDER_OUTPUT_TRUNCATED",
+  "PROVIDER_REFUSED",
+  "PROVIDER_RESPONSE_INVALID",
+  "AUTHORITY_BYTES_MISMATCH",
+  "AUTHORITY_MODULE_UNKNOWN",
+  "HANDOFF_MALFORMED",
+  "HANDOFF_BLOCKED",
+  "HANDOFF_IDENTITY_MISMATCH",
+  "HANDOFF_INCOMPLETE",
+  "HANDOFF_UNDECLARED_FIELD",
+  "HANDOFF_MODULE_UNSUPPORTED",
+  "ARTIFACT_RECORD_MISMATCH",
+  "NOT_AUTHENTICATED",
+  "ENDPOINT_NOT_FOUND",
+  "EDGE_NOT_TRUSTED",
+  "ORIGIN_REFUSED",
+  "EDGE_CONFIG_INVALID",
+  "CONCURRENCY_LIMIT_REACHED",
+  "INTERNAL_FAULT",
+  "NOT_AUTHORISED",
+  "REQUEST_INVALID",
+  "IDEMPOTENCY_KEY_REQUIRED",
+  "IDEMPOTENCY_KEY_REUSED",
+  "RUN_INPUT_NOT_PINNED",
+  "RUN_ALREADY_STARTED",
+  "RUN_NOT_STOPPED",
+  "QUEUED_RUNS_LIMIT_REACHED",
+  "ROUTE_NOT_ENABLED",
+  "COMMAND_EXPECTATION_STALE",
+  "METHODOLOGY_INPUT_INVALID",
+  "FORECAST_DRIVER_NOT_READY",
+  "DELIVERABLE_PAYLOAD_INVALID",
+  "DELIVERABLE_NOT_FOUND",
+  "NARRATIVE_FIGURE_UNREFERENCED",
+  "NARRATIVE_REFERENCE_INVALID",
+  "DELIVERABLE_UNCITED_FIGURE",
+  "DELIVERABLE_MARKDOWN_UNSUPPORTED",
+  "DELIVERABLE_NOT_SIGNED",
+  "DELIVERABLE_NOT_FROZEN",
+  "DELIVERABLE_MOVED_SINCE_SIGNING",
+  "DELIVERABLE_ALREADY_FILED",
+  "DELIVERABLE_ALREADY_FROZEN",
+  "DELIVERABLE_ALREADY_SIGNED",
+  "DELIVERABLE_PACKAGE_NOT_STORED",
+  "APPROVER_NOT_INDEPENDENT",
+  "CASE_NOT_FOUND",
+  "SOURCE_PACK_EMPTY",
+  "SOURCE_NOT_READABLE",
+  "SOURCE_ENCRYPTED",
+  "SOURCE_HAS_NO_TEXT",
+  "SOURCE_TOO_LARGE",
+  "SOURCE_EXTRACTION_TIMEOUT",
+  "SOURCE_IDENTITY_INVALID",
+  "EVIDENCE_NOT_AVAILABLE",
+  "EVIDENCE_PACKING_MISMATCH",
+  "EVIDENCE_DEMAND_UNRESOLVED",
+  "PAGE_NOT_AVAILABLE",
+  "CITATION_NOT_LOCATED",
+  "CITATION_AMBIGUOUS",
+  "CITATION_NOT_DELIVERED",
+  "ROUTE_PROFILE_UNKNOWN",
+  "ROUTE_SELECTION_UNKNOWN",
+  "ROUTE_EXTENSION_OWNER_MISSING",
+  "ROUTE_HAS_A_CYCLE",
+  "ROUTE_DUPLICATE_MODULE",
+  "ROUTE_EDGE_UNSUPPORTED",
+  "ROUTE_ALREADY_PINNED",
+  "ROUTE_IDENTITY_INVALID",
+  "ROUTE_PIN_TOO_LATE",
+  "RUN_INPUT_INVALID",
+  "RESEARCH_BRIEF_INVALID",
+  "RUN_QUALIFIER_INVALID",
+  "REPORTING_PERIOD_UNREADABLE",
+  "RUN_INPUT_ALREADY_PINNED",
+  "RUN_INPUT_TOO_LATE",
+  "GATE_APPROVAL_MISMATCH",
+  "QUALIFICATION_SET_EMPTY",
+  "QUALIFICATION_KEY_UNANSWERABLE",
+  "QUALIFICATION_SET_AMBIGUOUS",
+  "QUALIFICATION_KEY_AMBIGUOUS",
+  "QUALIFICATION_RUN_MISSING",
+  "QUALIFICATION_SET_FILE_INVALID",
+  "QUALIFICATION_SET_PATH_ESCAPES",
+  "QUALIFICATION_SET_OVER_CEILING",
+  "ORCHESTRATION_NOTHING_TO_PROVE",
+  "ORCHESTRATION_ROUTE_NOT_PINNED",
+  "ORCHESTRATION_NODE_NOT_IN_ROUTE",
+  "ORCHESTRATION_BUILD_MOVED",
+  "ORCHESTRATION_SOURCE_NOT_PINNED",
+  "ORCHESTRATION_CITATION_LOST",
+  "ORCHESTRATION_ARTIFACT_UNREADABLE",
+  "VERDICT_INCOMPLETE",
+  "VERDICT_BINDING_INVALID",
+  "VERDICT_UNDECLARED_FIELD",
+  "VERDICT_EXPIRED",
+  "VERDICT_ALREADY_RECORDED",
+  "QUALIFICATION_EVIDENCE_NOT_FOUND",
+  "STORE_SCHEMA_DRIFT",
+  "STORE_NOT_TRANSACTIONAL",
+  "STORE_NOT_CONFIGURED",
+  "STORE_UNAVAILABLE",
+  "IDENTITY_UNAVAILABLE",
+  "STREAM_LIMIT_REACHED",
+]);
+const RunSummary = object({
+  run_id: uuid,
+  status: enumOf(RUN_STATUSES),
+  created_at: datetime,
+  profile_id: nullable(short),
+  selection_id: nullable(short),
+  stop_code: nullable(RefusalCode),
+  // The model the run was started on (F468); null for a run that predates
+  // the pin and runs on the deployment's configured model.
+  model: nullable(short),
+});
+// A case's live members, served only to its ADMIN (O21); null is "not served".
+const MemberRow = object({ user_id: uuid, standing: Standing });
+const CaseRow = object({
+  case_id: uuid,
+  title: text,
+  created_at: datetime,
+  standing: Standing,
+  live_sources: int(),
+  latest_run: nullable(RunSummary),
+  members: nullable(array(MemberRow, 64)),
+  actions: array(ActionView, 2),
+});
+const DirectoryBody = object({ cases: array(CaseRow, 200) });
+const DirectoryDocument = sectionDocument(DirectoryBody);
+
+const SourceRow = object({
+  source_id: uuid,
+  filename: text,
+  document_sha256: hash,
+  admitted_at: datetime,
+  withdrawn_at: nullable(datetime),
+  extractor_identity: nullable(text),
+  set_versions: array(int(), 1000),
+});
+const SetVersion = object({ version: int(), fingerprint: hash, member_count: int() });
+const UploadBody = object({
+  case_id: uuid,
+  sources: array(SourceRow, 1000),
+  set_versions: array(SetVersion, 1000),
+});
+const UploadDocument = sectionDocument(UploadBody);
+
+const RunSubjectView = object({
+  issuer_id: string({ max: 128 }),
+  issuer_name: text,
+  reporting_period: text,
+  analysis_date: string({ max: 10, pattern: "^\\d{4}-\\d{2}-\\d{2}$" }),
+});
+// A CP-DR run-linked brief's caller-authored fields (`PinRunInput.research`):
+// the host supplies schema, `mode: linked`, the CP-0 scope/subject identity
+// and `source_mode` itself before the store judges the whole.
+const ResearchBriefQuestion = object({
+  question_id: short,
+  question: text,
+  decision_relevance: text,
+  consumer_module_id: short,
+  after_module_id: short,
+  evidence_needed: text,
+  completion_test: text,
+});
+const ResearchBrief = object({
+  decision_context: text,
+  as_of_date: string({ max: 10, pattern: "^\\d{4}-\\d{2}-\\d{2}$" }),
+  time_horizon: text,
+  budget: enumOf(["standard", "extended"]),
+  authorization_basis: text,
+  exclusions: text,
+  questions: array(ResearchBriefQuestion, 32),
+});
+// One command qualifier a pin states for one module (D109,
+// `PinRunInput.qualifiers`).
+const RunQualifier = object({
+  module_id: short,
+  name: short,
+  value: string({ max: 1024 }),
+});
+const GateView = object({ gate: Gate, state: GateState });
+const EdgeView = object({ source: short, type: EdgeType });
+// One edge of the pinned route, both ends by module, met or not (D73): the
+// route's shape, where a node's `waiting_on` is only what it still waits for.
+const RouteEdgeView = object({ source: short, target: short, type: EdgeType });
+const NodeView = object({
+  route_node_id: short,
+  module_id: short,
+  // The bundle catalog's own name for `module_id` (N61).
+  module_name: text,
+  stage: int(),
+  state: NodeState,
+  waiting_on: array(EdgeView, 256),
+  awaiting_gate: bool,
+  gate_verdict: nullable(short),
+  // What the gate wrote beside a verdict it did not clear — the T8 blocker cell
+  // of a CONDITIONAL or BLOCKED readiness row, where CP-0 names the source the
+  // pinned set does not carry (§61). Null for a node it cleared or never ruled
+  // on, so nothing here ever renders an empty reason as a stated one.
+  gate_reason: nullable(string({ max: 512 })),
+});
+const AttemptView = object({
+  attempt_id: uuid,
+  route_node_id: short,
+  ordinal: nullable(int()),
+  started_at: datetime,
+  accepted: bool,
+});
+const WorkView = object({
+  state: enumOf(["QUEUED", "CLAIMED", "STOPPED", "DONE"]),
+  stop_code: nullable(later(() => RefusalCode)),
+  cancel_requested: bool,
+});
+// `accepts_model_extension` is the create command's own route resolution
+// asked in advance (§82): advisory, and resolved again at commit.
+const RouteChoice = object({
+  profile_id: short,
+  selection_id: short,
+  accepts_model_extension: bool,
+});
+// A model the deployment approves for a new run, at the dated per-token price
+// a run started on it is pinned to (F468). `configured` marks the model a
+// create naming none gets. Rates are the server's exact decimal strings.
+const perToken = string({ max: 64, pattern: "^-?[0-9]+(\\.[0-9]+)?$" });
+const ModelChoice = object({
+  model: short,
+  input_per_token: perToken,
+  output_per_token: perToken,
+  as_of: string({ max: 10, pattern: "^\\d{4}-\\d{2}-\\d{2}$" }),
+  configured: bool,
+});
+// The node whose validated Blocked verdict ended the run, as the transition
+// recorded it (§68). Nullable on `RunView`: a run the frontier emptied is
+// BLOCKED with no node to name, and the wire never claims one.
+// The evidence line a citation anchored in, split by the server around its
+// excerpt (D105): recorded, `before + excerpt + after` is the line, never
+// sliced here, and an empty `excerpt` is a line the server could not place the
+// quote in. Not recorded (a record from before whole-line citations), the
+// quote is `excerpt` alone and is no source line.
+const LineView = object({
+  before: string({ max: 65536 }),
+  excerpt: string({ max: 65536 }),
+  after: string({ max: 65536 }),
+  recorded: bool,
+});
+// Why a citation is unverified (D106): the anchoring fault that left it so.
+// A citation's place in its answer's list: the `[C<n>]` its module's body cites
+// it by (D107). Null on a citation accepted before markers.
+const Marker = nullable(int({ min: 1 }));
+const UnverifiedCode = enumOf([
+  "CITATION_NOT_LOCATED",
+  "CITATION_AMBIGUOUS",
+  "CITATION_NOT_DELIVERED",
+]);
+// A citation of an accepted answer that did not anchor (D106): the model's own
+// locator and quote. No line, no rectangle, no located document: nothing on it
+// may be shown as host-verified, and its claim is "Untraced".
+const UnverifiedCitationView = object({
+  source_id: uuid,
+  page: int({ min: 1 }),
+  matched_text: string({ max: 65536 }),
+  code: UnverifiedCode,
+  // False where the answer's body does not carry the quote either.
+  linked: bool,
+  marker: Marker,
+});
+const RefusalBody = object({ code: RefusalCode, clears: text });
+// A located quote of a Blocked answer (D106): its line, as a source fact's.
+const BlockedQuoteView = object({
+  document_sha256: hash,
+  source_id: uuid,
+  withdrawn_at: nullable(datetime),
+  page: int({ min: 1 }),
+  matched_text: string({ max: 65536 }),
+  line: LineView,
+  linked: bool,
+  marker: Marker,
+});
+// The verdict that ended a run, and the Blocked answer's quotes as the host
+// judged them (owner: "Show its quotes"); none recorded before migration 0044.
+const BlockedByView = object({
+  route_node_id: short,
+  module_id: short,
+  attempt_id: uuid,
+  quotes_recorded: bool,
+  // Kept but unreadable: the typed refusal, contained here.
+  quotes_refusal: nullable(RefusalBody),
+  verified: array(BlockedQuoteView, 1024),
+  unverified: array(UnverifiedCitationView, 1024),
+});
+const RunView = object({
+  run_id: uuid,
+  status: enumOf(RUN_STATUSES),
+  created_at: datetime,
+  route_digest: nullable(hash),
+  build_id: nullable(short),
+  source_set_version: nullable(int()),
+  input_fingerprint: nullable(hash),
+  subject: nullable(RunSubjectView),
+  gates: array(GateView, 2),
+  nodes: array(NodeView, 256),
+  edges: array(RouteEdgeView, 4096),
+  attempts: array(AttemptView, 4096),
+  work: nullable(WorkView),
+  blocked_by: nullable(BlockedByView),
+  // The successor link (§72), both ends: the BLOCKED run of this case this run
+  // was created to answer, and the one run created to answer this one. Null at
+  // an end that has nothing to name. The link says which run answers which;
+  // whether the answer holds is the reader's judgement, not the host's claim.
+  supersedes: nullable(uuid),
+  superseded_by: nullable(uuid),
+});
+const RunBody = object({
+  case_id: uuid,
+  latest_run_id: nullable(uuid),
+  displayed_run_id: nullable(uuid),
+  runs: array(RunSummary, 200),
+  run: nullable(RunView),
+  route_choices: array(RouteChoice, 18),
+  model_choices: array(ModelChoice, 16),
+});
+const RunSectionDocument = sectionDocument(RunBody);
+
+const RectView = object({ x0: number, y0: number, x1: number, y1: number });
+const CitationView = object({
+  document_sha256: hash,
+  source_id: uuid,
+  filename: text,
+  page: int(),
+  matched_text: string({ max: 65536 }),
+  line: LineView,
+  rects: array(RectView, 256),
+  withdrawn_at: nullable(datetime),
+  cited_page: nullable(int({ min: 1 })),
+  // False for a quote no marker in the answer's body names (D106, D107):
+  // still host-verified, but "not linked to a statement in the answer".
+  linked: bool,
+  marker: Marker,
+});
+// A handoff's tagged tables, read by the server from its Markdown with the
+// bundle's own reader (`caos/methodology/tables.py`); the browser never parses
+// Markdown. A figure is the server's exact decimal string, never a float, and
+// null is "no figure", never zero.
+const CellView = object({
+  text,
+  value: nullable(string({ max: 64, pattern: "^-?[0-9]+(\\.[0-9]+)?$" })),
+});
+const TableView = object({
+  table_id: string({ max: SHORT, pattern: "^[A-Za-z0-9_.]+$" }),
+  columns: array(text, 32),
+  rows: array(array(CellView, 32), 2000),
+});
+// A register the module's output profile declares (N94), located by the
+// bundle's own reader: `declared` is the profile column the bundle binds to
+// each header cell, null where it binds none.
+const RegisterView = object({
+  register_id: string({ max: SHORT, pattern: "^[A-Za-z0-9_.]+$" }),
+  columns: array(text, 32),
+  declared: array(nullable(text), 32),
+  rows: array(array(CellView, 32), 2000),
+});
+const HandoffView = object({
+  route_node_id: short,
+  module_id: short,
+  module_name: text,
+  artifact_sha256: hash,
+  record_sha256: hash,
+  accepted_at: datetime,
+  qa_status: short,
+  committee_status: short,
+  confidence_score: int(),
+  confidence_band: short,
+  limitation_flags: array(text, 256),
+  validation_warnings: array(text, 256),
+  decision_scope: short,
+  screening_only: bool,
+  source_facts: array(CitationView, 1024),
+  unverified_facts: array(UnverifiedCitationView, 1024),
+  model_analysis: string({ max: 4194304 }),
+  host_calculation: enumOf(["NONE", "CP_CF_FORECAST"]),
+  tables: array(TableView, 64),
+  tables_unavailable_reason: nullable(enumOf(["TABLES_MALFORMED", "TABLES_TOO_LARGE"])),
+  registers: array(RegisterView, 64),
+  registers_unavailable_reason: nullable(enumOf(["TABLES_MALFORMED", "TABLES_TOO_LARGE"])),
+});
+const PendingNode = object({
+  route_node_id: short,
+  module_id: short,
+  module_name: text,
+  state: NodeState,
+});
+const AnalysisBody = object({
+  case_id: uuid,
+  latest_run_id: nullable(uuid),
+  displayed_run_id: nullable(uuid),
+  subject: nullable(RunSubjectView),
+  displayed_run_status: nullable(enumOf(RUN_STATUSES)),
+  blocked_by: nullable(BlockedByView),
+  handoffs: array(HandoffView, 256),
+  pending: array(PendingNode, 256),
+});
+const AnalysisDocument = sectionDocument(AnalysisBody);
+
+// A projected value's own dimension (R24-12): MONEY for an `_amount`, in the
+// forecast's own currency and scale; MULTIPLE for the leverage/coverage
+// family; RATIO for the margin and FCF over debt (N3), shown unscaled (a
+// Model reader performs no arithmetic on the server's decimal strings).
+const ModelUnit = enumOf(["MONEY", "MULTIPLE", "RATIO"]);
+const ModelValue = object({
+  name: short,
+  unit: ModelUnit,
+  value: nullable(string({ max: 64, pattern: "^-?[0-9]+(\\.[0-9]+)?$" })),
+  unavailable_reason: nullable(literal("ZERO_OR_NEGATIVE_DENOMINATOR")),
+});
+const ModelPeriod = object({
+  case: text,
+  period_id: text,
+  fiscal_year: text,
+  days: string({ max: 3, pattern: "^[0-9]+$" }),
+  values: array(ModelValue, 40),
+  unavailable_reason: nullable(text),
+});
+const ModelForecast = object({
+  route_node_id: short,
+  artifact_sha256: hash,
+  record_sha256: hash,
+  accepted_at: datetime,
+  qa_status: short,
+  limitation_flags: array(text, 256),
+  validation_warnings: array(text, 256),
+  currency: string({ max: 3, pattern: "^[A-Z]{3}$" }),
+  scale: enumOf(["units", "thousands", "millions", "billions"]),
+  perimeter: text,
+  periods: array(ModelPeriod, 240),
+});
+const ModelBody = object({
+  case_id: uuid,
+  latest_run_id: nullable(uuid),
+  displayed_run_id: nullable(uuid),
+  subject: nullable(RunSubjectView),
+  displayed_run_status: nullable(enumOf(RUN_STATUSES)),
+  blocked_by: nullable(BlockedByView),
+  forecast: nullable(ModelForecast),
+  unavailable_reason: nullable(literal("NO_ACCEPTED_FORECAST")),
+});
+const ModelDocument = sectionDocument(ModelBody);
+
+// Book, `/api/v1/book`: the credit across the portfolio. No
+// case in its body, so it is the one section document beside Directory's that
+// answers for no single case.
+// What the column's own figure is (N60): a plain fraction and a currency
+// amount are the same shape of decimal string, so the cell is told which.
+const BookColumn = object({
+  key: short,
+  label: text,
+  unit: enumOf(["percent", "currency", "multiple", "count", "none"]),
+});
+const BookResearch = object({ route_node_id: short, module_id: short, qa_status: short });
+/** The ten passport fields, in their order and closed to them. */
+const BookPassport = object({
+  definition: text,
+  period: text,
+  scenario: text,
+  reporting_period: text,
+  computed_at: datetime,
+  snapshot: hash,
+  method: text,
+  derivation: text,
+  citations: array(CitationView, 1024),
+  supporting_research: array(BookResearch, 256),
+});
+const BookCell = object({
+  column: short,
+  value: nullable(string({ max: 64, pattern: "^-?[0-9]+(\\.[0-9]+)?$" })),
+  unavailable_reason: nullable(literal("ZERO_OR_NEGATIVE_DENOMINATOR")),
+  passport: BookPassport,
+});
+const BookPeriod = object({
+  case: text,
+  period_id: text,
+  fiscal_year: text,
+  days: string({ max: 3, pattern: "^[0-9]+$" }),
+  unavailable_reason: nullable(text),
+  cells: array(BookCell, 16),
+});
+const BookRow = object({
+  case_id: uuid,
+  title: text,
+  standing: Standing,
+  subject: nullable(RunSubjectView),
+  displayed_run_id: nullable(uuid),
+  displayed_run_status: nullable(enumOf(RUN_STATUSES)),
+  snapshot: nullable(hash),
+  currency: nullable(string({ max: 3, pattern: "^[A-Z]{3}$" })),
+  scale: nullable(enumOf(["units", "thousands", "millions", "billions"])),
+  periods: array(BookPeriod, 8),
+  unavailable_reason: nullable(literal("NO_ACCEPTED_FORECAST")),
+  refusal: nullable(later(() => RefusalBody)),
+});
+const BookBasis = object({
+  period: literal("EVERY_ACCEPTED_PERIOD"),
+  scenario: literal("EVERY_ACCEPTED_CASE"),
+  accepted_only: literal(true),
+});
+const BookBody = object({
+  basis: BookBasis,
+  columns: array(BookColumn, 16),
+  rows: array(BookRow, 4),
+});
+const BookDocument = sectionDocument(BookBody);
+
+// Self-contained the way `CitationView` is: the evidence drawer opens a
+// figure's source from `record_sha256` and `source_id` without
+// cross-referencing `ReportBody.artifacts` or the run's pinned members.
+const NarrativeFigure = object({
+  route_node_id: short,
+  // The record's module: a citation is named "CP-1 C3" (D107).
+  module_id: short,
+  record_sha256: hash,
+  citation_index: int({ min: 0 }),
+  document_sha256: hash,
+  source_id: uuid,
+  page: int({ min: 1 }),
+  matched_text: string({ max: 65536 }),
+  line: LineView,
+  rects: array(RectView, 256),
+  withdrawn_at: nullable(datetime),
+  // The record citation's own `linked` (D106) and `marker` (D107).
+  linked: bool,
+  marker: Marker,
+});
+// A figure naming an unverified citation (D106): the model's locator as the
+// record holds it, shown labelled and never opened as a host-verified source.
+const NarrativeUnverified = object({
+  route_node_id: short,
+  // The record's module: a citation is named "CP-1 C3" (D107).
+  module_id: short,
+  record_sha256: hash,
+  unverified_index: int({ min: 0 }),
+  source_id: uuid,
+  page: int({ min: 1 }),
+  matched_text: string({ max: 65536 }),
+  code: UnverifiedCode,
+  linked: bool,
+  marker: Marker,
+});
+const NarrativeSpan = object({
+  text: nullable(string({ max: 2000 })),
+  figure: nullable(NarrativeFigure),
+  unverified: nullable(NarrativeUnverified),
+});
+const ReportArtifact = object({
+  route_node_id: short,
+  artifact_sha256: hash,
+  record_sha256: hash,
+  markdown: string({ max: 4194304 }),
+  record: string({ max: 4194304 }),
+  qa_status: short,
+  committee_status: short,
+  decision_scope: short,
+  limitation_flags: array(text, 256),
+  validation_warnings: array(text, 256),
+  // What the markdown's markers name (D107): each marked record citation as a
+  // figure the source drawer opens, and each marked unverified one.
+  figures: array(NarrativeFigure, 1024),
+  unverified: array(NarrativeUnverified, 1024),
+});
+// One revision of the displayed run and how far it has gone: what Report lists
+// and Committee's front door links to. It proves nothing; opening one does.
+const RevisionSummary = object({
+  revision_id: uuid,
+  payload_sha256: hash,
+  saved_at: datetime,
+  state: enumOf(["saved", "frozen", "filed"]),
+});
+const reportFields = {
+  case_id: uuid,
+  displayed_run_id: uuid,
+  // Null only on a Report for a run nothing has been saved from yet.
+  revision_id: nullable(uuid),
+  payload_sha256: nullable(hash),
+  case_title: text,
+  artifacts: array(ReportArtifact, 256),
+  narrative: array(array(NarrativeSpan, 64), 64),
+  // The run's revisions, newest first: empty on the Report with none.
+  revisions: array(RevisionSummary, 64),
+};
+const ReportBody = object(reportFields);
+const ReportDocument = sectionDocument(ReportBody);
+const FiledReceipt = object({
+  case_id: uuid,
+  run_id: uuid,
+  revision_id: uuid,
+  payload_sha256: hash,
+  signed_by: uuid,
+  frozen_by: uuid,
+  filed_by: uuid,
+  renderer_sha256: hash,
+  filed_event_sha256: hash,
+});
+const CommitteeBody = object({
+  ...reportFields,
+  revision_id: uuid,
+  payload_sha256: hash,
+  state: enumOf(["frozen", "filed"]),
+  signed_by: array(uuid, 1000),
+  frozen_by: uuid,
+  filed_by: nullable(uuid),
+  receipt: nullable(FiledReceipt),
+  render_url: text,
+  package_url: nullable(text),
+});
+const CommitteeDocument = sectionDocument(CommitteeBody);
+
+// Events and evidence pages (brief 4.4, decisions 2, 7 and 8).
+/** The closed event names a case stream carries; a name only says what to refetch. */
+export const EVENT_NAMES = [
+  "run_progress",
+  "handoff_accepted",
+  "run_terminal",
+  "sources_changed",
+  "runs_changed",
+  "filing_changed",
+] as const;
+const EventName = enumOf(EVENT_NAMES);
+const FrameView = object({
+  x0: number,
+  y0: number,
+  x1: number,
+  y1: number,
+  y_axis: enumOf(["down", "up"]),
+});
+const PageLine = object({
+  text: string({ max: 65536 }),
+  x0: number,
+  y0: number,
+  x1: number,
+  y1: number,
+  hidden: array(
+    enumOf([
+      "colorant_none",
+      "near_background",
+      "optional_content_off",
+      "painted_over",
+      "render_mode_3",
+      "under_2pt",
+    ]),
+    6,
+  ),
+});
+const PageBody = object({
+  case_id: uuid,
+  run_id: uuid,
+  source_id: uuid,
+  document_sha256: hash,
+  page: int({ min: 1, max: 500 }),
+  frame: FrameView,
+  lines: array(PageLine, 2000),
+});
+// Not a section document: no chrome.
+const PageDocument = object({
+  body: PageBody,
+  observed_at: datetime,
+  status: enumOf(["complete", "partial"]),
+  notes: array(SectionNote, 3),
+});
+
+const QualificationState = enumOf(["QUALIFIED", "UNQUALIFIED", "RESTRICTED", "UNAVAILABLE"]);
+const QualificationRead = object({
+  evidence_sha256: hash,
+  state: QualificationState,
+  qualification_set_sha256: nullable(hash),
+  performed_sha256: nullable(hash),
+  build_id: nullable(short),
+  adapter_version: nullable(short),
+  provider: nullable(short),
+  model: nullable(short),
+  reviewer: nullable(text),
+  reviewer_id: nullable(uuid),
+  decided_at: nullable(datetime),
+  expires_at: nullable(datetime),
+});
+
+/** Every model `schema.json` declares, under its backend name. */
+export const V1_SHAPES = {
+  NarrativeFigure,
+  NarrativeUnverified,
+  NarrativeSpan,
+  ReportArtifact,
+  RevisionSummary,
+  ReportBody,
+  ReportDocument,
+  FiledReceipt,
+  CommitteeBody,
+  CommitteeDocument,
+  ModelUnit,
+  ModelValue,
+  ModelPeriod,
+  ModelForecast,
+  ModelBody,
+  ModelDocument,
+  BookColumn,
+  BookResearch,
+  BookPassport,
+  BookCell,
+  BookPeriod,
+  BookRow,
+  BookBasis,
+  BookBody,
+  BookDocument,
+  ActionName,
+  ActionView,
+  AnalysisBody,
+  AnalysisDocument,
+  AttemptView,
+  BlockedByView,
+  CaseRow,
+  MemberRow,
+  CellView,
+  Chrome,
+  CitationView,
+  UnverifiedCitationView,
+  BlockedQuoteView,
+  LineView,
+  DirectoryBody,
+  DirectoryDocument,
+  EdgeType,
+  EdgeView,
+  EventName,
+  FrameView,
+  Gate,
+  GateState,
+  GateView,
+  GlobalRole,
+  HandoffView,
+  NodeState,
+  NodeView,
+  PageBody,
+  PageDocument,
+  PageLine,
+  PendingNode,
+  RectView,
+  RefusalBody,
+  RefusalCode,
+  QualificationRead,
+  QualificationState,
+  ResearchBrief,
+  ResearchBriefQuestion,
+  RunQualifier,
+  RouteChoice,
+  ModelChoice,
+  RouteEdgeView,
+  RunBody,
+  RunSectionDocument,
+  RunSubjectView,
+  RunSummary,
+  RunView,
+  SectionNote,
+  ServedRole,
+  SetVersion,
+  SourceRow,
+  Standing,
+  Subject,
+  RegisterView,
+  TableView,
+  UploadBody,
+  UploadDocument,
+  WorkView,
+};
+
+export type DirectoryDocument = Infer<typeof DirectoryDocument>;
+export type UploadDocument = Infer<typeof UploadDocument>;
+export type RunSectionDocument = Infer<typeof RunSectionDocument>;
+export type AnalysisDocument = Infer<typeof AnalysisDocument>;
+export type ModelDocument = Infer<typeof ModelDocument>;
+export type BookDocument = Infer<typeof BookDocument>;
+export type BookRow = Infer<typeof BookRow>;
+export type BookCell = Infer<typeof BookCell>;
+export type BookPassport = Infer<typeof BookPassport>;
+export type BookColumn = Infer<typeof BookColumn>;
+export type BookPeriod = Infer<typeof BookPeriod>;
+export type ReportDocument = Infer<typeof ReportDocument>;
+export type CommitteeDocument = Infer<typeof CommitteeDocument>;
+export type RevisionSummary = Infer<typeof RevisionSummary>;
+export type ReportArtifact = Infer<typeof ReportArtifact>;
+export type RefusalBody = Infer<typeof RefusalBody>;
+export type RefusalCode = Infer<typeof RefusalCode>;
+export type QualificationRead = Infer<typeof QualificationRead>;
+export type QualificationState = Infer<typeof QualificationState>;
+export type Chrome = Infer<typeof Chrome>;
+export type CaseRow = Infer<typeof CaseRow>;
+export type MemberRow = Infer<typeof MemberRow>;
+export type SourceRow = Infer<typeof SourceRow>;
+export type RunView = Infer<typeof RunView>;
+export type NodeView = Infer<typeof NodeView>;
+export type HandoffView = Infer<typeof HandoffView>;
+export type RegisterView = Infer<typeof RegisterView>;
+export type TableView = Infer<typeof TableView>;
+export type CellView = Infer<typeof CellView>;
+export type CitationView = Infer<typeof CitationView>;
+export type UnverifiedCitationView = Infer<typeof UnverifiedCitationView>;
+export type BlockedByView = Infer<typeof BlockedByView>;
+export type NarrativeUnverified = Infer<typeof NarrativeUnverified>;
+export type LineView = Infer<typeof LineView>;
+export type PendingNode = Infer<typeof PendingNode>;
+export type EventName = Infer<typeof EventName>;
+export type FrameView = Infer<typeof FrameView>;
+export type PageLine = Infer<typeof PageLine>;
+export type PageDocument = Infer<typeof PageDocument>;
+export type ActionView = Infer<typeof ActionView>;
+export type WorkView = Infer<typeof WorkView>;
+export type RouteChoice = Infer<typeof RouteChoice>;
+export type ModelChoice = Infer<typeof ModelChoice>;
+export type SectionDocument =
+  | DirectoryDocument
+  | UploadDocument
+  | RunSectionDocument
+  | AnalysisDocument
+  | ModelDocument
+  | BookDocument
+  | ReportDocument
+  | CommitteeDocument;
+
+export const parseDirectoryDocument = (value: unknown): DirectoryDocument =>
+  parse(DirectoryDocument, value);
+export const parseUploadDocument = (value: unknown): UploadDocument => parse(UploadDocument, value);
+export const parseRunSectionDocument = (value: unknown): RunSectionDocument =>
+  parse(RunSectionDocument, value);
+export const parseAnalysisDocument = (value: unknown): AnalysisDocument =>
+  parse(AnalysisDocument, value);
+export const parseModelDocument = (value: unknown): ModelDocument => parse(ModelDocument, value);
+export const parseBookDocument = (value: unknown): BookDocument => parse(BookDocument, value);
+export const parseReportDocument = (value: unknown): ReportDocument => parse(ReportDocument, value);
+export const parseCommitteeDocument = (value: unknown): CommitteeDocument =>
+  parse(CommitteeDocument, value);
+export const parseRefusalBody = (value: unknown): RefusalBody => parse(RefusalBody, value);
+export const parseQualificationRead = (value: unknown): QualificationRead =>
+  parse(QualificationRead, value);
+export const parsePageDocument = (value: unknown): PageDocument => parse(PageDocument, value);
+
+export class WireIdentityError extends Error {
+  readonly code = "WIRE_IDENTITY_MISMATCH";
+  constructor() {
+    super("WIRE_IDENTITY_MISMATCH");
+    this.name = "WireIdentityError";
+  }
+}
+
+/** Two ids name one thing when they agree ignoring case; two absent ids do
+    too, so a receipt with no filer matches a body with none. */
+export function sameId(a: string | null | undefined, b: string | null | undefined): boolean {
+  return (a ?? null)?.toLowerCase() === (b ?? null)?.toLowerCase();
+}
+
+/**
+ * Refuse a document answering for another case or run than the one requested.
+ * `caseId: null` is the case-less directory. `runId`, when given, must be the
+ * displayed run; the latest run is a separate identity and is not compared.
+ */
+export function requireIdentity(
+  doc: SectionDocument,
+  expected: { caseId: string | null; runId?: string | null; revisionId?: string },
+): void {
+  const subject = doc.chrome.subject;
+  if (!sameId(subject?.case_id, expected.caseId)) throw new WireIdentityError();
+  if ("case_id" in doc.body && !sameId(doc.body.case_id, expected.caseId)) {
+    throw new WireIdentityError();
+  }
+  if (expected.runId !== undefined) {
+    if (!("displayed_run_id" in doc.body)) throw new WireIdentityError();
+    if (!sameId(doc.body.displayed_run_id, expected.runId)) throw new WireIdentityError();
+  }
+  if (expected.revisionId !== undefined) {
+    if (!("revision_id" in doc.body) || !sameId(doc.body.revision_id, expected.revisionId)) {
+      throw new WireIdentityError();
+    }
+  }
+  if ("receipt" in doc.body) {
+    const { receipt } = doc.body;
+    if (
+      (doc.body.state === "frozen" && (receipt !== null || doc.body.filed_by !== null)) ||
+      (doc.body.state === "filed" && (receipt === null || doc.body.filed_by === null))
+    ) {
+      throw new WireIdentityError();
+    }
+    if (receipt === null) return;
+    if (
+      !sameId(receipt.case_id, doc.body.case_id) ||
+      !sameId(receipt.run_id, doc.body.displayed_run_id) ||
+      !sameId(receipt.revision_id, doc.body.revision_id) ||
+      receipt.payload_sha256 !== doc.body.payload_sha256 ||
+      !sameId(receipt.frozen_by, doc.body.frozen_by) ||
+      !sameId(receipt.filed_by, doc.body.filed_by) ||
+      !doc.body.signed_by.some((signer) => sameId(signer, receipt.signed_by))
+    )
+      throw new WireIdentityError();
+  }
+}
+
+/** Refuse an evidence page answering for another case, run, source or page. */
+export function requirePageIdentity(
+  doc: PageDocument,
+  expected: { caseId: string; runId: string; sourceId: string; page: number },
+): void {
+  const body = doc.body;
+  if (
+    !sameId(body.case_id, expected.caseId) ||
+    !sameId(body.run_id, expected.runId) ||
+    !sameId(body.source_id, expected.sourceId) ||
+    body.page !== expected.page
+  ) {
+    throw new WireIdentityError();
+  }
+}

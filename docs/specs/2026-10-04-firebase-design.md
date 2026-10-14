@@ -69,9 +69,13 @@ A third edge mode, `firebase`, selected by `CAOS_FIREBASE_PROJECT=<project id>`.
 refuses `EDGE_CONFIG_INVALID` if it is set together with `DATABRICKS_APP_NAME`, or
 without `CAOS_PUBLIC_ORIGIN` and `CAOS_ROLE_MAP`.
 
-- **Token source.** `Authorization: Bearer <ID token>` on every request; on `GET`
-  only, the `__session` cookie as a fallback (for `EventSource`). An unsafe request
-  must carry the header. Origin and `Sec-Fetch-Site` checks stay as they are.
+- **Token source.** `Authorization: Bearer <ID token>` when present, else the
+  `__session` cookie (`SameSite=Strict`), on every method, so `EventSource` and every
+  existing `fetch` work unchanged. Cross-site unsafe requests are already refused by
+  the Origin and `Sec-Fetch-Site` checks, which stay as they are, with
+  `CAOS_PUBLIC_ORIGIN` required in this mode. *Amended 2026-10-11:* the SPA
+  authenticates every request with the `__session` cookie; it never sends an
+  `Authorization` header.
 - **Verification** (`pyjwt` + `cryptography`, both already locked): RS256 only; `kid`
   among Google's certificates at
   `https://www.googleapis.com/robot/v1/metadata/x509/securetoken@system.gserviceaccount.com`,
@@ -82,8 +86,9 @@ without `CAOS_PUBLIC_ORIGIN` and `CAOS_ROLE_MAP`.
   logged but the code.
 - **Actor.** `user_id = uuid5(<fixed namespace>, "firebase:" + sub)`. Global role from
   `CAOS_ROLE_MAP` (`email=ROLE;email=ROLE`, compared lower-case); an email not in the
-  map is `403 NOT_AUTHORISED`. Every inbound `x-caos-*`, `x-forwarded-*` and
-  `forwarded` header is dropped before identity, as platform mode does.
+  map is `403 NOT_AUTHORISED`. The identity headers (`x-caos-user`, `x-caos-role`,
+  `x-forwarded-groups`) are dropped before identity, as platform mode does; this mode
+  reads only `authorization` and `cookie`, so no other forwarded header decides anyone.
 - **Sign-in method: email and password**, not Google sign-in. The app's policy sets
   `require-trusted-types-for 'script'; trusted-types 'none'` and
   `cross-origin-opener-policy: same-origin`; Google's popup and redirect flows load
@@ -92,11 +97,11 @@ without `CAOS_PUBLIC_ORIGIN` and `CAOS_ROLE_MAP`.
   (`identitytoolkit.googleapis.com`, `securetoken.googleapis.com`). The owner creates
   the accounts in the Firebase console: one ANALYST (the owner), READER logins for
   viewers. Google sign-in is a later change with its own policy review.
-- **Frontend.** `firebase` (modular `app` + `auth` only; a new dependency, D7) with
+- **Frontend.** `firebase` (modular `app` + `auth` only; a new dependency, FD7) with
   `initializeAuth(app, {persistence: indexedDBLocalPersistence})` and no popup
   resolver, so no third-party script or frame loads. A sign-in screen gates the
   workspace; `onIdTokenChanged` refreshes the bearer token and the `__session` cookie
-  (`Secure; SameSite=Strict; Path=/api; Max-Age=3600`). The sidebar's Sign out
+  (`Secure; SameSite=Strict; Path=/; Max-Age=3600`). The sidebar's Sign out
   becomes live (sign out, clear the cookie).
 - **Accepted limits.** No revocation check (ID tokens live one hour); one cookie name
   kept for Hosting compatibility later.
@@ -126,6 +131,11 @@ instance, database and role; the bucket; the two secrets; then
 (the three model values exactly as at the fork point).
 `CAOS_PUBLIC_ORIGIN` is the service URL, set on a second deploy once known. The
 service URL is added to Firebase Auth's authorised domains.
+
+*Superseded 2026-10-11 (FD24):* the deploy command and secrets are as in
+`docs/DEPLOY.md` §6: three secrets, `CAOS_ROLE_MAP` from Secret Manager secret
+`caos-role-map` rather than a plain env var, and every secret version pinned (`:1`),
+never `:latest` (H1).
 
 ## 5. Verification
 

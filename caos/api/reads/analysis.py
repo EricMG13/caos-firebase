@@ -1,0 +1,628 @@
+"""The Analysis section read (Task 4.1, slice 4.1e).
+
+Every accepted handoff of the displayed run, in route order, each read through
+`accepted_handoff`: the record must bind its exact Markdown, the identity the
+store rebuilds, this build and the accepted lineage, and nothing is re-anchored
+(§42.4). Each is labelled per §46.3 -- `source_facts` are the host-verified
+citations with withdrawal read live, `model_analysis` is the model's exact
+Markdown, and `host_calculation` is `NONE`. Beside the Markdown, each serves
+the tagged tables it carries, read from those same bytes by the bundle's own
+reader (`caos.methodology.tables`): exact text, and `Decimal` figures where the
+bundle reads a figure -- or no table and a typed reason. Nothing is stored and
+the Markdown stays the authority. A node without an accepted handoff
+is listed as pending with its recomputed state and makes the document partial;
+on a run a validated Blocked verdict ended, `blocked_by` names which of those
+nodes answered, because a Blocked verdict accepts nothing (§68).
+A run of another case, an unknown and a malformed run are one `RUN_NOT_FOUND`.
+"""
+
+from __future__ import annotations
+
+from dataclasses import dataclass
+from datetime import datetime
+from typing import Any
+from uuid import UUID
+
+from fastapi import APIRouter
+
+from caos.api.deps import (
+    IDENTITY_FIRST,
+    Blobs,
+    Caller,
+    CasePath,
+    Methodology,
+    RunQuery,
+    Store,
+    VisibleCase,
+)
+from caos.api.identity import Actor
+from caos.api.wire import (
+    CLEARS,
+    AnalysisBody,
+    AnalysisDocument,
+    BlockedByView,
+    BlockedQuoteView,
+    CellView,
+    Chrome,
+    CitationView,
+    HandoffView,
+    LineView,
+    PendingNode,
+    RectView,
+    RefusalBody,
+    RegisterView,
+    RunSubjectView,
+    SectionNote,
+    ServedRole,
+    Subject,
+    TableView,
+    UnverifiedCitationView,
+    bounded,
+)
+from caos.blobs import BlobStore
+from caos.deliverable.render import SCREENING_ONLY
+from caos.evidence.citations import EXCERPT, AnchoredCitation, CitationRule
+from caos.graph.route import (
+    MODEL_MODULE,
+    NodeResult,
+    NodeState,
+    ResolvedRoute,
+    node_states,
+)
+from caos.methodology.bundle import Bundle, module_display_names, verified_bytes
+from caos.methodology.canonical import accepted_handoff
+from caos.methodology.handoff import (
+    CanonicalRecord,
+    UnverifiedCitation,
+    read_blocked_citations,
+)
+from caos.methodology.invocation import named_objects
+from caos.methodology.tables import (
+    HandoffRegister,
+    HandoffTable,
+    handoff_registers,
+    handoff_tables,
+)
+from caos.methodology.vendor import cached_contract
+from caos.methodology.verification import AcceptedRow
+from caos.refusals import Refusal, RefusalCode
+from caos.store import StoreConnection
+from caos.store.members import Standing
+from caos.store.routes import resolved_route
+from caos.store.source_sets import cited_source_ids
+
+# Fixed: standing; the case title, `now()`, latest run and the displayed run's
+# ownership in one row; the subject; the pinned route (`resolved_route`); the
+# accepted artifacts; the cited sources; the displayed run's own status, which
+# is what tells a run that stopped from one still working, and -- in the same
+# row -- the verdict that ended it. Then, per accepted handoff, the host
+# identity `accepted_handoff` rebuilds (as app's `CANONICAL_READINESS_IO`), and
+# for CP-CF's the re-proof of its four owner inputs on top.
+#
+# Declared for the longest route a run can pin, not for a LITE run of three
+# (ED-7): the budget is a bound only if no pinned route exceeds it, and the
+# ten-node forecast route cost 149 against the 37 once declared here. The
+# longest is FULL_CREDIT_ASSESSMENT with the model extension, twenty nodes,
+# CP-CF among them (`tests/test_analysis_section.py` resolves every pathway to
+# check). Measured per handoff on one, three and ten handoffs, the forecast
+# route's CP-CF included (`tests/test_analysis_section.py`,
+# `tests/test_model_section.py`).
+FIXED_IO = 7
+PER_HANDOFF_IO = 10
+MODEL_PROOFS_IO = 42
+LONGEST_ROUTE_NODES = 20
+# A Blocked run's located quotes resolved to their pinned sources (D106,
+# D107): one query, only on a BLOCKED run whose verdict kept its quotes.
+BLOCKED_QUOTES_IO = 1
+IO_BUDGET = (
+    FIXED_IO
+    + LONGEST_ROUTE_NODES * PER_HANDOFF_IO
+    + MODEL_PROOFS_IO
+    + BLOCKED_QUOTES_IO
+)
+# Blob reads, which no store budget counted: the artifact and its record per
+# accepted handoff, each downloaded and hashed once per request however many
+# of the lineage and record readers ask for it (`BlobStore.remembering`).
+PER_HANDOFF_BLOBS = 2
+# A Blocked run's answer's quotes, as the transition stored them (D106):
+# one blob, read only on a BLOCKED run whose verdict kept them.
+BLOCKED_QUOTES_BLOBS = 1
+BLOB_BUDGET = LONGEST_ROUTE_NODES * PER_HANDOFF_BLOBS + BLOCKED_QUOTES_BLOBS
+# A handoff's tables cost neither: they are read from the Markdown this request
+# already downloaded and verified, by the contract `accepted_handoff` compiled.
+# Its registers cost no store or blob read either: the module's `SKILL.md` is
+# the bundle's own tree, verified on disk (or the host's own, for CP-CF). They
+# do cost disk and CPU: each handoff's registers read and hash that `SKILL.md`
+# and re-verify the bundle manifest (`verified_bytes` -> `bundle.verify_manifest`),
+# a second time after `verify_accepted`'s. And CPU: the read locates registers
+# twice per handoff, once in `verify_accepted`'s `check()` and once here,
+# measured 1.7 ms against `check()`'s 2.1 ms on the CP-1A fixture.
+
+router = APIRouter()
+
+
+@dataclass(frozen=True)
+class AnalysisQuery:
+    """Identity, the path, the query and the caller's visibility of the
+    case, then the store's three handles -- the seven values `read_analysis`
+    takes as FastAPI dependencies, carried as one parameter so Model and Book
+    (`read_analysis_without_tables`) can ask for the same document without a
+    call whose argument count this module's own ceiling would refuse."""
+
+    actor: Actor
+    case_id: UUID
+    run: UUID | None
+    standing: Standing
+    conn: StoreConnection
+    blobs: BlobStore
+    bundle: Bundle
+
+
+@router.get(
+    "/api/v1/cases/{case_id}/analysis",
+    response_model=AnalysisDocument,
+    dependencies=[IDENTITY_FIRST],
+)
+def read_analysis(  # noqa: PLR0913 -- identity, path, query, then the stores
+    actor: Caller,
+    case_id: CasePath,
+    run: RunQuery,
+    standing: VisibleCase,
+    conn: Store,
+    blobs: Blobs,
+    bundle: Methodology,
+) -> AnalysisDocument:
+    """The order of the parameters is load-bearing: identity, the path, the
+    query and the caller's visibility of the case, then the store."""
+    query = AnalysisQuery(actor, case_id, run, standing, conn, blobs, bundle)
+    return _analysis_document(query, with_tables=True)
+
+
+def read_analysis_without_tables(query: AnalysisQuery) -> AnalysisDocument:
+    """The document Model and Book each read (N58): every accepted handoff's
+    Markdown and source facts, without deriving the tagged tables neither
+    keeps -- `ModelBody` excludes `handoffs` outright and `BookResearch`
+    carries no `tables` field, so the derivation those two readers used to
+    pay for was computed only to be dropped."""
+    return _analysis_document(query, with_tables=False)
+
+
+def _case_row(
+    conn: StoreConnection, case_id: UUID, run: UUID | None
+) -> tuple[str, Any, UUID | None, UUID | None]:
+    """The case's title and `now()`, its latest run, and the run this request
+    displays -- `run` when pinned, else the latest. A case row that is gone
+    is `CASE_NOT_FOUND`; a pinned run of another case is `RUN_NOT_FOUND`."""
+    row = conn.execute(
+        "SELECT title, now(),"
+        " (SELECT run_id FROM runs WHERE case_id = c.case_id"
+        "  ORDER BY created_at DESC, run_id DESC LIMIT 1),"
+        " EXISTS (SELECT 1 FROM runs WHERE run_id = %s::uuid AND case_id = c.case_id)"
+        " FROM cases c WHERE c.case_id = %s",
+        (run, case_id),
+    ).fetchone()
+    if row is None:  # standing on a case row that is gone: still not readable
+        raise Refusal(RefusalCode.CASE_NOT_FOUND)
+    title, observed_at, latest, owned = row
+    if run is not None and not owned:
+        raise Refusal(RefusalCode.RUN_NOT_FOUND)
+    return title, observed_at, latest, run if run is not None else latest
+
+
+def _displayed_status(
+    conn: StoreConnection, displayed: UUID | None
+) -> tuple[Any, tuple[Any, Any, Any] | None]:
+    """The displayed run's own status, and its blocking verdict if any --
+    read as the stored string, the way `reads/run.py` reads it: the column
+    holds exactly the five the wire declares. The blocking verdict rides the
+    same row rather than a second round trip -- it is one left join against a
+    table with at most one row per run, and reading it here keeps the
+    declared budget the shape it was measured in."""
+    if displayed is None:
+        return None, None
+    found = conn.execute(
+        "SELECT r.status, v.attempt_id, a.route_node_id, v.citations_sha256"
+        " FROM runs r"
+        " LEFT JOIN run_blocking_verdicts v ON v.run_id = r.run_id"
+        " LEFT JOIN run_attempts a ON a.attempt_id = v.attempt_id"
+        " WHERE r.run_id = %s",
+        (displayed,),
+    ).fetchone()
+    if found is None:
+        return None, None
+    return found[0], None if found[1] is None else (found[1], found[2], found[3])
+
+
+def _analysis_document(query: AnalysisQuery, *, with_tables: bool) -> AnalysisDocument:
+    conn = query.conn
+    title, observed_at, latest, displayed = _case_row(conn, query.case_id, query.run)
+    handoffs: list[HandoffView] = []
+    pending: list[PendingNode] = []
+    subject: RunSubjectView | None = None
+    notes: list[SectionNote] = []
+    route = None if displayed is None else resolved_route(conn, displayed)
+    displayed_status, blocking = _displayed_status(conn, displayed)
+    blocked_by = None
+    if displayed is not None and route is None:
+        notes.append(SectionNote.ROUTE_NOT_PINNED)
+    elif displayed is not None and route is not None:
+        subject = _subject(conn, displayed)
+        handoffs, pending = _handoffs(
+            _Handles(conn, query.blobs, query.bundle),
+            route,
+            displayed,
+            with_tables=with_tables,
+        )
+        if pending:
+            notes.append(SectionNote.HANDOFFS_PENDING)
+        if displayed_status == "BLOCKED" and blocking is not None:
+            handles = _Handles(conn, query.blobs, query.bundle)
+            blocked_by = _blocked_by(route, blocking, handles, displayed)
+    return AnalysisDocument(
+        chrome=Chrome(
+            subject=Subject(case_id=query.case_id, title=title),
+            served_role=ServedRole(
+                global_role=query.actor.role, standing=query.standing
+            ),
+            actions=[],
+        ),
+        body=AnalysisBody(
+            case_id=query.case_id,
+            latest_run_id=latest,
+            displayed_run_id=displayed,
+            subject=subject,
+            displayed_run_status=displayed_status,
+            blocked_by=blocked_by,
+            handoffs=handoffs,
+            pending=pending,
+        ),
+        observed_at=observed_at,
+        observed_empty=displayed is None,
+        status="partial" if notes else "complete",
+        notes=notes,
+    )
+
+
+def _blocked_by(
+    route: ResolvedRoute,
+    blocking: tuple[object, object, object],
+    handles: _Handles,
+    run_id: UUID,
+) -> BlockedByView:
+    """The node whose validated Blocked verdict ended this run, as the
+    transition recorded it (§68) -- read, never re-derived, exactly as
+    `reads/run.py` reads it."""
+    attempt, node_id, citations = blocking
+    return blocked_by_view(
+        route, (attempt, node_id), citations, (handles.conn, handles.blobs, run_id)
+    )
+
+
+def blocked_by_view(
+    route: ResolvedRoute,
+    verdict: tuple[object, object],
+    citations_sha256: object,
+    stores: tuple[StoreConnection, BlobStore, UUID],
+) -> BlockedByView:
+    """The Blocked verdict `verdict` (its attempt and route node) as Run and
+    Analysis serve it, with the answer's quotes as the host judged them
+    (D106; owner: "Show its quotes (Recommended)"): read from the blob the
+    transition stored (`read_blocked_citations`, one blob read; each located
+    quote's source resolved in one query, `cited_source_ids`), or none, and
+    `quotes_recorded` false, for a verdict stored before migration 0044; a
+    kept blob that is missing or not this host's bytes is that typed refusal,
+    contained in `quotes_refusal`, never the page's. A
+    node the pinned route does not carry is a store the pins do not
+    describe, refused rather than served under a guessed module."""
+    attempt, node_id = verdict
+    node = next((n for n in route.nodes if n.route_node_id == str(node_id)), None)
+    if node is None:
+        raise Refusal(RefusalCode.ORCHESTRATION_NODE_NOT_IN_ROUTE)
+    conn, blobs, run_id = stores
+    anchored: tuple[AnchoredCitation, ...] = ()
+    unverified: tuple[UnverifiedCitation, ...] = ()
+    sources: dict[str, tuple[UUID, datetime | None]] = {}
+    refused: RefusalBody | None = None
+    if citations_sha256 is not None:
+        try:
+            anchored, unverified = read_blocked_citations(blobs, str(citations_sha256))
+            sources = cited_source_ids(
+                conn, run_id, (c.document_sha256 for c in anchored)
+            )
+        except Refusal as refusal:
+            anchored, unverified = (), ()
+            refused = RefusalBody(code=refusal.code, clears=CLEARS[refusal.code])
+    return BlockedByView(
+        route_node_id=node.route_node_id,
+        module_id=node.module_id,
+        attempt_id=UUID(str(attempt)),
+        quotes_recorded=citations_sha256 is not None,
+        quotes_refusal=refused,
+        verified=[
+            BlockedQuoteView(
+                document_sha256=c.document_sha256,
+                source_id=sources[c.document_sha256][0],
+                withdrawn_at=sources[c.document_sha256][1],
+                page=c.page,
+                matched_text=bounded(c.matched_text),
+                line=LineView.of(c.line_text, c.matched_text, EXCERPT),
+                linked=c.linked,
+                marker=c.marker,
+            )
+            for c in anchored
+        ],
+        unverified=[_unverified_view(entry) for entry in unverified],
+    )
+
+
+def _unverified_view(entry: UnverifiedCitation) -> UnverifiedCitationView:
+    """An unverified citation as recorded (D106), its quote within the
+    wire's bound."""
+    return UnverifiedCitationView.model_validate(
+        {
+            "source_id": entry.source_id,
+            "page": entry.page,
+            "matched_text": bounded(entry.matched_text),
+            "code": entry.code.value,
+            "linked": entry.linked,
+            "marker": entry.marker,
+        }
+    )
+
+
+def _subject(conn: StoreConnection, run_id: UUID) -> RunSubjectView | None:
+    """The pinned run subject, or None for a run pinned without one."""
+    row = conn.execute(
+        "SELECT issuer_id, issuer_name, reporting_period, analysis_date"
+        " FROM run_inputs WHERE run_id = %s AND issuer_id IS NOT NULL",
+        (run_id,),
+    ).fetchone()
+    if row is None:
+        return None
+    issuer_id, issuer_name, period, analysis_date = (str(value) for value in row)
+    return RunSubjectView(
+        issuer_id=issuer_id,
+        issuer_name=issuer_name,
+        reporting_period=period,
+        analysis_date=analysis_date,
+    )
+
+
+@dataclass(frozen=True)
+class _Handles:
+    """The store connection, the blob store and the methodology bundle: the
+    three handles `_handoffs` and `accepted_handoff` beneath it always thread
+    together, carried as one parameter so a fourth, `with_tables`, fits the
+    same argument ceiling every other reader in this module keeps to."""
+
+    conn: StoreConnection
+    blobs: BlobStore
+    bundle: Bundle
+
+
+def _handoffs(
+    handles: _Handles,
+    route: ResolvedRoute,
+    run_id: UUID,
+    *,
+    with_tables: bool,
+) -> tuple[list[HandoffView], list[PendingNode]]:
+    """Accepted handoffs in route order, then every other node with its state.
+
+    A row without its record, or whose record no longer binds, refuses
+    `ARTIFACT_RECORD_MISMATCH` (503): the server's own bytes failed.
+    """
+    conn, blobs, bundle = handles.conn, handles.blobs, handles.bundle
+    names = module_display_names(bundle)
+    rows = {
+        str(node): (UUID(str(attempt)), str(artifact), record, created)
+        for node, attempt, artifact, record, created in conn.execute(
+            "SELECT route_node_id, attempt_id, artifact_sha256, record_sha256,"
+            " created_at FROM artifacts WHERE run_id = %s",
+            (run_id,),
+        ).fetchall()
+    }
+    pairs = {
+        node: (artifact, None if record is None else str(record))
+        for node, (_attempt, artifact, record, _created) in rows.items()
+    }
+    read: list[tuple[str, str, CanonicalRecord, bytes, object]] = []
+    for node in route.nodes:
+        if node.route_node_id not in rows:
+            continue
+        attempt, artifact, record_sha, created = rows[node.route_node_id]
+        if record_sha is None:
+            raise Refusal(RefusalCode.ARTIFACT_RECORD_MISMATCH)
+        markdown, record = accepted_handoff(
+            conn,
+            blobs,
+            bundle,
+            route,
+            AcceptedRow(
+                run_id=run_id,
+                route_node_id=node.route_node_id,
+                attempt_id=attempt,
+                artifact_sha256=artifact,
+                record_sha256=str(record_sha),
+            ),
+            accepted=pairs,
+        )
+        read.append((node.route_node_id, str(record_sha), record, markdown, created))
+
+    documents = _cited_documents(conn, run_id, [r for _n, _s, r, _m, _c in read])
+    handoffs = [
+        _handoff_view(
+            node_id,
+            sha,
+            record,
+            markdown.decode("utf-8"),
+            created,
+            documents,
+            bundle,
+            names,
+            with_tables=with_tables,
+        )
+        for node_id, sha, record, markdown, created in read
+    ]
+    accepted = {
+        node_id: NodeResult(
+            readiness=tuple(record.projections.readiness),
+            qa_status=record.projections.qa_status,
+        )
+        for node_id, _s, record, _m, _c in read
+    }
+    states = node_states(route, accepted, named_objects(bundle, route))
+    pending = [
+        PendingNode(
+            route_node_id=node.route_node_id,
+            module_id=node.module_id,
+            module_name=names.get(node.module_id, node.module_id),
+            state=states[node.route_node_id],
+        )
+        for node in route.nodes
+        if node.route_node_id not in accepted
+        and states[node.route_node_id] is not NodeState.COMPLETE
+    ]
+    return handoffs, pending
+
+
+def _cited_documents(
+    conn: StoreConnection, run_id: UUID, records: list[CanonicalRecord]
+) -> dict[str, tuple[UUID, str, object]]:
+    """Source, filename and live withdrawal for every cited document, in one
+    query. The source is the one those facts are read from, so a citation's
+    page is addressed by the same pinned member its label names.
+
+    Among the run's pinned members, a live source is preferred, so a document
+    withdrawn under one copy and still live under another reads live. A cited
+    document no member names is the record disagreeing with the store.
+    """
+    cited = sorted({c.document_sha256 for r in records for c in r.citations})
+    if not cited:
+        return {}
+    found = {
+        str(document): (UUID(str(source_id)), str(filename), withdrawn_at)
+        for document, source_id, filename, withdrawn_at in conn.execute(
+            "SELECT DISTINCT ON (s.document_sha256) s.document_sha256, s.source_id,"
+            " s.filename, s.withdrawn_at FROM run_inputs i JOIN source_set_members m"
+            " ON (m.case_id, m.version) = (i.case_id, i.source_version)"
+            " JOIN sources s ON (s.case_id, s.source_id) = (m.case_id, m.source_id)"
+            " WHERE i.run_id = %s AND s.document_sha256 = ANY(%s)"
+            " ORDER BY s.document_sha256, s.withdrawn_at IS NOT NULL, s.source_id",
+            (run_id, cited),
+        ).fetchall()
+    }
+    if set(found) != set(cited):
+        raise Refusal(RefusalCode.ARTIFACT_RECORD_MISMATCH)
+    return found
+
+
+def _handoff_view(  # noqa: PLR0913 -- one accepted handoff and its lookups
+    route_node_id: str,
+    record_sha256: str,
+    record: CanonicalRecord,
+    markdown: str,
+    accepted_at: object,
+    documents: dict[str, tuple[UUID, str, object]],
+    bundle: Bundle,
+    names: dict[str, str],
+    *,
+    with_tables: bool,
+) -> HandoffView:
+    projections = record.projections
+    # The contract `accepted_handoff` compiled for this manifest, read again --
+    # only when the caller keeps tables (N58): Model and Book each drop this
+    # handoff's tables before the wire is built, so deriving them for those
+    # two readers spent CPU on a value nothing serves.
+    if with_tables:
+        derived = handoff_tables(cached_contract(bundle), markdown)
+        tables = [_table_view(table) for table in derived.tables]
+        tables_unavailable_reason = derived.unavailable_reason
+        located = handoff_registers(
+            cached_contract(bundle),
+            verified_bytes(bundle, projections.module_id, "SKILL.md").decode("utf-8"),
+            projections.module_id,
+            markdown,
+        )
+        registers = [_register_view(register) for register in located.registers]
+        registers_unavailable_reason = located.unavailable_reason
+    else:
+        tables = []
+        tables_unavailable_reason = None
+        registers = []
+        registers_unavailable_reason = None
+    return HandoffView(
+        route_node_id=route_node_id,
+        module_id=projections.module_id,
+        module_name=names.get(projections.module_id, projections.module_id),
+        artifact_sha256=record.artifact_sha256,
+        record_sha256=record_sha256,
+        accepted_at=accepted_at,  # type: ignore[arg-type]
+        qa_status=projections.qa_status,
+        committee_status=projections.committee_status,
+        confidence_score=projections.confidence_score,
+        confidence_band=projections.confidence_band,
+        limitation_flags=list(projections.limitation_flags),
+        validation_warnings=list(projections.validation_warnings),
+        decision_scope=projections.decision_scope,
+        screening_only=projections.decision_scope == SCREENING_ONLY,
+        source_facts=[
+            _citation(c, documents, record.citation_rule) for c in record.citations
+        ],
+        # The model's own locators and quotes, as recorded (D106): no lookup,
+        # since a model's `source_id` may name no source the run was given.
+        unverified_facts=[_unverified_view(entry) for entry in record.unverified],
+        # Model-authored and rendered as text, never as markup (§46.3).
+        model_analysis=markdown,
+        host_calculation=(
+            "CP_CF_FORECAST" if projections.module_id == MODEL_MODULE else "NONE"
+        ),
+        tables=tables,
+        tables_unavailable_reason=tables_unavailable_reason,
+        registers=registers,
+        registers_unavailable_reason=registers_unavailable_reason,
+    )
+
+
+def _table_view(table: HandoffTable) -> TableView:
+    return TableView(
+        table_id=table.table_id,
+        columns=list(table.columns),
+        rows=[
+            [CellView(text=cell.text, value=cell.value) for cell in row]
+            for row in table.rows
+        ],
+    )
+
+
+def _register_view(register: HandoffRegister) -> RegisterView:
+    return RegisterView(
+        register_id=register.register_id,
+        columns=list(register.columns),
+        declared=list(register.declared),
+        rows=[
+            [CellView(text=cell.text, value=cell.value) for cell in row]
+            for row in register.rows
+        ],
+    )
+
+
+def _citation(
+    citation: AnchoredCitation,
+    documents: dict[str, tuple[UUID, str, object]],
+    rule: CitationRule,
+) -> CitationView:
+    source_id, filename, withdrawn_at = documents[citation.document_sha256]
+    return CitationView(
+        document_sha256=citation.document_sha256,
+        source_id=source_id,
+        filename=filename,
+        page=citation.page,
+        matched_text=bounded(citation.matched_text),
+        line=LineView.of(citation.line_text, citation.matched_text, rule),
+        rects=[RectView(x0=b.x0, y0=b.y0, x1=b.x1, y1=b.y1) for b in citation.bboxes],
+        withdrawn_at=withdrawn_at,  # type: ignore[arg-type]
+        cited_page=citation.cited_page,
+        linked=citation.linked,
+        marker=citation.marker,
+    )

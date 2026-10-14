@@ -1,0 +1,51 @@
+repos:
+  - repo: https://github.com/astral-sh/ruff-pre-commit
+    rev: v0.14.0
+    hooks:
+      - id: ruff
+        args: [--fix]
+        exclude: ^vendor/
+      - id: ruff-format
+        exclude: ^vendor/
+  - repo: https://github.com/gitleaks/gitleaks
+    rev: v8.30.1
+    hooks:
+      - id: gitleaks
+      # The staged hook above (`gitleaks git --pre-commit --staged`) never
+      # sees an unstaged or untracked file (CF-064); this one scans the
+      # working tree as git would commit it (tracked plus untracked, never
+      # ignored; F466), same pin as the hook above.
+      - id: gitleaks
+        name: gitleaks (uncommitted tree)
+        entry: bash scripts/gitleaks_tree.sh
+  - repo: https://github.com/pre-commit/pre-commit-hooks
+    rev: v5.0.0
+    hooks:
+      - id: check-added-large-files
+        # Exact public-evidence paths only; their manifests remain checked.
+        exclude: ^(vendor/|qualification/ba-fy2025/documents/BA_FY2025_10K\.txt$|qualification/f-fy2025/documents/F_FY2025_10K\.txt$|qualification/ccl-fy2025-covenant-refinancing/documents/CCL_2025_Revolving_Credit_Agreement\.txt$|qualification/ccl-fy2025-full-relative-value/documents/CCL_2025_Revolving_Credit_Agreement\.txt$|qualification/ccl-fy2025-lite-covenant-refinancing/documents/CCL_2025_Revolving_Credit_Agreement\.txt$|qualification/ccl-fy2025-lite-full-credit-screen/documents/CCL_2025_Revolving_Credit_Agreement\.txt$|qualification/save-2024-distressed-restructuring/documents/SAVE_2024_RSA_with_Chapter_11_Plan\.txt$|qualification/save-2024-lite-distressed-restructuring/documents/SAVE_2024_RSA_with_Chapter_11_Plan\.txt$|qualification/czr-2026q2-liquidity/documents/CZR_2024_Credit_Agreement_Incremental_Assumption_No3\.txt$|qualification/czr-2026q2-covenant-refinancing/documents/CZR_2024_Credit_Agreement_Incremental_Assumption_No3\.txt$|qualification/czr-2026q2-covenant-refinancing/documents/CZR_2024_650_Senior_Secured_Notes_2032_Indenture\.txt$|qualification/czr-2026q2-lite-covenant-refinancing/documents/CZR_2024_Credit_Agreement_Incremental_Assumption_No3\.txt$|qualification/czr-2026q2-lite-covenant-refinancing/documents/CZR_2024_650_Senior_Secured_Notes_2032_Indenture\.txt$|qualification/czr-2026q2-lite-relative-value/documents/CZR_2024_Credit_Agreement_Incremental_Assumption_No3\.txt$|qualification/czr-2026q2-lite-relative-value/documents/CZR_2024_650_Senior_Secured_Notes_2032_Indenture\.txt$|qualification/czr-2026q2-relative-value/documents/CZR_2024_Credit_Agreement_Incremental_Assumption_No3\.txt$|qualification/czr-2026q2-relative-value/documents/CZR_2024_650_Senior_Secured_Notes_2032_Indenture\.txt$|qualification/czr-2026q2-lite-full-credit-screen/documents/CZR_2024_Credit_Agreement_Incremental_Assumption_No3\.txt$|qualification/czr-2026q2-lite-full-credit-screen/documents/CZR_2024_650_Senior_Secured_Notes_2032_Indenture\.txt$|qualification/czr-2026q2-lite-portfolio/documents/CZR_2024_650_Senior_Secured_Notes_2032_Indenture\.txt$|qualification/czr-2026q2-portfolio/documents/CZR_2024_Credit_Agreement_Incremental_Assumption_No3\.txt$|qualification/czr-2026q2-portfolio/documents/CZR_2024_650_Senior_Secured_Notes_2032_Indenture\.txt$|qualification/czr-2026q2-full-credit-assessment/documents/CZR_2024_Credit_Agreement_Incremental_Assumption_No3\.txt$|qualification/czr-2026q2-full-credit-assessment/documents/CZR_2024_650_Senior_Secured_Notes_2032_Indenture\.txt$)
+      - id: check-merge-conflict
+        exclude: ^vendor/
+      - id: end-of-file-fixer
+        # Vendored trees are never edited: the bundle, the public evidence, the
+        # pinned third-party skills (their provenance says "otherwise unchanged").
+        exclude: ^(vendor/|qualification/.*/documents/|\.claude/skills/|complexipy-snapshot\.json$)
+      - id: trailing-whitespace
+        exclude: ^(vendor/|qualification/.*/documents/|\.claude/skills/|complexipy-snapshot\.json$)
+  - repo: local
+    hooks:
+      - id: vocabulary
+        name: one term per concept (CONTEXT.md)
+        entry: uv run python scripts/check_vocabulary.py
+        language: system
+        pass_filenames: false
+      - id: tested
+        name: every public definition is named by a test
+        entry: uv run python scripts/check_tested.py
+        language: system
+        pass_filenames: false
+      - id: io-budget
+        name: every request path declares an I/O budget
+        entry: uv run python scripts/io_budget.py --assert
+        language: system
+        pass_filenames: false

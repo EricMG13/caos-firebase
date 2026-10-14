@@ -1,0 +1,153 @@
+// Upload's one governed write (brief 4.2, decision 12): admit a source pack.
+// The control renders from the document's own `chrome.actions` -- present
+// and refused, never hidden (decision 10; CLAUDE.md "Persona is not
+// authority") -- and the command rechecks authority and every §44 limit at
+// commit regardless of what this control shows. An action this section's
+// document does not name at all is not available either: `RefusedControl`'s
+// own fallback (`ACTION_UNPLACED`) is what renders it that way, by this
+// control passing no `onClick` when there is no `action` to check. On
+// success this section refetches its own document once; 4.4 owns the
+// SSE-driven refresh other sections get. A refetch that fails never reads as
+// nothing happened: the success stands (the pack was admitted) beside a
+// distinct, visible refresh failure.
+import { useId, useRef, useState } from "react";
+import { UploadIcon } from "lucide-react";
+import { admitSources } from "@/app/commands";
+import { sectionUrl } from "@/app/transport";
+import { cn } from "cn";
+import { buttonVariants } from "@/components/ui/button";
+import { RefusedControl } from "@/controls/RefusedControl";
+import { CommandOutcome, useCommand } from "@/sections/run/controls";
+import type { DocumentRefetch } from "@/app/useDocumentRefetch";
+import {
+  parseUploadDocument,
+  type ActionView,
+  type SourcesAdmitted,
+  type UploadDocument,
+} from "@/wire/v1";
+
+/** Upload's own document, re-read once after a success (brief 4.2, decision
+    12). Reuses `sectionUrl` and the v1 parser rather than the section-status
+    classifier in `@/app/transport`, whose union of the v1 documents this
+    control has no reason to narrow. */
+export async function refetchUpload(caseId: string): Promise<UploadDocument | null> {
+  const url = sectionUrl("upload", { case: caseId });
+  if (!url) return null;
+  let response: Response;
+  try {
+    response = await fetch(url, { headers: { accept: "application/json" } });
+  } catch {
+    return null;
+  }
+  if (!response.ok) return null;
+  try {
+    return parseUploadDocument(await response.json());
+  } catch {
+    return null;
+  }
+}
+
+/** A stable key for the exact file set, order-sensitive, so two different
+    selections of the same size never compare equal by accident. The intent's
+    key is reused only for a retry of the same set after an answer that
+    settled nothing (`useCommand`). */
+function fileSetKey(files: readonly File[]): string {
+  return files.map((file) => `${file.name}:${file.size}:${file.lastModified}`).join("|");
+}
+
+export function AdmitSources({
+  action,
+  caseId,
+  onRefetch,
+  reasonDisplay = "inline",
+}: {
+  action: ActionView | undefined;
+  caseId: string;
+  onRefetch: DocumentRefetch<UploadDocument>;
+  /** Hidden where the pack says the reason once for both its commands. */
+  reasonDisplay?: "inline" | "hidden";
+}) {
+  const inputId = useId();
+  const inputRef = useRef<HTMLInputElement>(null);
+  const [files, setFiles] = useState<File[]>([]);
+  const selection = useRef(0);
+  const { pending, result, run } = useCommand<SourcesAdmitted>();
+  const [refreshFailed, setRefreshFailed] = useState(false);
+  const refusal = action?.refusal ?? null;
+
+  async function submit() {
+    if (refusal || pending || files.length === 0) return;
+    const sentSelection = selection.current;
+    setRefreshFailed(false);
+    const outcome = await run(fileSetKey(files), (intent) => admitSources(caseId, files, intent));
+    if (outcome?.kind !== "ok") return;
+    if (selection.current === sentSelection) {
+      setFiles([]);
+      if (inputRef.current) inputRef.current.value = "";
+    }
+    const refreshed = await onRefetch(() => refetchUpload(caseId));
+    if (refreshed !== null) setRefreshFailed(!refreshed);
+  }
+
+  return (
+    <div className="admitsources" data-admit-sources>
+      {/* Still an <input type="file">, focused and labelled as one; the
+          browser's own "Choose Files / No file chosen" gives way to the
+          workspace's button and the names chosen (brief 6.10). */}
+      <label className="sr-only" htmlFor={inputId}>
+        Documents to admit
+      </label>
+      <input
+        ref={inputRef}
+        id={inputId}
+        type="file"
+        multiple
+        className="peer sr-only"
+        onChange={(event) => {
+          selection.current += 1;
+          setFiles(Array.from(event.target.files ?? []));
+        }}
+      />
+      <label
+        htmlFor={inputId}
+        aria-hidden="true"
+        className={cn(
+          buttonVariants({ variant: "outline", size: "sm" }),
+          "cursor-pointer peer-focus-visible:ring-3 peer-focus-visible:ring-ring/50",
+        )}
+      >
+        <UploadIcon />
+        Choose documents
+      </label>
+      <span className="admit-chosen" data-admit-chosen>
+        {files.length
+          ? files.map((file) => (
+              <span key={`${file.name}:${file.size}`} className="tag">
+                {file.name}
+              </span>
+            ))
+          : "No documents chosen"}
+      </span>
+      <RefusedControl
+        refusal={refusal}
+        onClick={action ? () => void submit() : undefined}
+        busy={pending}
+        variant="default"
+        reasonDisplay={reasonDisplay}
+        aria-label="Admit sources"
+      >
+        {pending ? "Admitting…" : `Admit${files.length ? ` ${files.length}` : ""}`}
+      </RefusedControl>
+      <CommandOutcome
+        result={result}
+        success={(receipt) => `${receipt.source_ids.length} source(s) admitted.`}
+        mark="admit-sources-success"
+      />
+      {refreshFailed ? (
+        <p className="note warn" role="alert" data-admit-sources-refresh-failed>
+          The sources were admitted, but the pack could not be refreshed. Reload to see them.
+        </p>
+      ) : null}
+    </div>
+  );
+}
