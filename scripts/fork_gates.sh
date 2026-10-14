@@ -24,7 +24,7 @@ DRY=0
 KEEPDB=0
 LOG=""
 # Upstream gate-config baseline commit (CLAUDE.md "$B").
-GATE_B=d07fea550d33c42ece390aad970d7ca994b9c406
+GATE_B=b13110e545ebbc9b74bc7efd3dd3388afb6c0fc5
 
 usage() { sed -n '2,19p' "$0" | sed 's/^# \{0,1\}//' >&2; exit 2; }
 
