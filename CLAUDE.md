@@ -46,6 +46,11 @@ fork's `@firebase/app` and `@firebase/auth` pins with `--ignore-scripts`, run
 `npm --prefix frontend audit fix --package-lock-only --ignore-scripts` if audit flags
 anything, then `npm --prefix frontend audit --omit=dev` must exit 0.
 
+The weekly `upstream-sync` workflow (Monday 06:00 UTC, or by hand) opens a `sync/<date>`
+PR to `main`, or an issue when the merge conflicts or upstream changed
+`.github/workflows/*`. SYNC_TOKEN: contents/pull requests/issues write, never Workflows;
+see the workflow header.
+
 ## Repo map (after the fork)
 
 - `caos/` — the app: `api/` (edge, identity, sections, commands, health), `store/`,
@@ -91,12 +96,30 @@ npm --prefix frontend run lint && npm --prefix frontend run typecheck && npm --p
 scripts/container_smoke.sh
 ```
 
+Run `scripts/fork_gates.sh quick` per task and `scripts/fork_gates.sh full` once per
+branch; each worktree gets its own Postgres (`scripts/worktree_postgres.sh`) for pytest and
+postgres-races, so parallel checkouts do not share a test database. The container smoke
+(compose test-postgres on :55437, port 8001) and the vite-preview gates (:4173) use shared
+resources, so `full` serializes them across checkouts with a lock under `$TMPDIR`. `full`
+runs the commands above (it brings up compose `test-postgres` before the smoke; frontend
+only when the diff against `origin/main`, including uncommitted changes, touches
+`frontend/`, or with `--all`; a failed diff runs the frontend gates); it writes one log
+per gate and a `gate exit seconds` table; `--dry-run` prints the plan.
+
 CI is upstream's `ci.yml`, unchanged, so syncs never conflict on it. Its `bundle`
 job runs against the workspace stand-in and is not a fork gate. The fork's own
 gates (container smoke, npm audit) run in `.github/workflows/fork.yml`. The `size`
 job follows FD21. `scripts/check_gate_config.py` inspects only `ci.yml`;
-`tests/test_fork_ci.py` checks that every action in fork.yml is pinned to the same
+`tests/test_fork_ci.py` checks that every action in fork.yml and upstream-sync.yml is pinned to the same
 40-hex SHA as in `ci.yml`, and fork.yml's other settings are checked by review.
+
+## Qualification (#7)
+
+Iterate on host fixes with the LITE set or a single-module set. Independent sets run in
+parallel: each `scripts/qualify.py` invocation creates its own database. Use
+`--attempts 3`. Run the FULL set (`czr-2026q2-full-credit-assessment`) only to confirm.
+The OpenRouter key comes from the Keychain item `caos-openrouter-key`, read with
+`| tr -d '[:space:]'`; spend is capped by `--ceiling`.
 
 ## Invariants (never weaken)
 
